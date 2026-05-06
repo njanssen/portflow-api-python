@@ -914,21 +914,19 @@ def print_coach_table(results, all_names=None):
         for name in all_names:
             student_goals.setdefault(name, {})
 
-    # Determine column widths
-    col_widths = []
-    for full_name, abbrev in GOAL_COLUMNS:
-        width = len(abbrev)
+    # Determine one shared width for all vaardigheid columns.
+    skill_col_width = max(len(abbrev) for _, abbrev in GOAL_COLUMNS)
+    for full_name, _ in GOAL_COLUMNS:
         for goals in student_goals.values():
             cell = ", ".join(goals.get(full_name, []))
-            width = max(width, len(cell))
-        col_widths.append(width)
+            skill_col_width = max(skill_col_width, len(cell))
 
     name_width = max(len("Naam"), max(len(s) for s in student_goals))
 
     # Header
     header = f"{'Naam':<{name_width}}"
-    for (_, abbrev), w in zip(GOAL_COLUMNS, col_widths):
-        header += f" | {abbrev:<{w}}"
+    for _, abbrev in GOAL_COLUMNS:
+        header += f" | {abbrev:<{skill_col_width}}"
     print()
     print(header)
     print("-" * len(header))
@@ -937,9 +935,9 @@ def print_coach_table(results, all_names=None):
     for student_name in sorted(student_goals.keys()):
         goals = student_goals[student_name]
         row = f"{student_name:<{name_width}}"
-        for (full_name, _), w in zip(GOAL_COLUMNS, col_widths):
+        for full_name, _ in GOAL_COLUMNS:
             cell = ", ".join(goals.get(full_name, []))
-            row += f" | {cell:<{w}}"
+            row += f" | {cell:<{skill_col_width}}"
         print(row)
 
     print()
