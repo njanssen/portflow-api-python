@@ -87,6 +87,20 @@ On start, the script:
 	 - `3` Students in table
 5. Shows output once and exits
 
+## Capture bearer token
+
+To be able to use the python script, you'll need to capture a bearer token.
+
+1. Log in to [portflow](https://canvas.hu.nl/courses/51659/external_tools/1134), using HU account
+2. Open "inspector" in browser
+3. Open "network" tab
+4. Filter on "dashboard"
+5. Reload (F5) the page
+6. <copy><paste> the bearer token
+
+Screenshot shows how to capture a bearer token using Safari browser and "inspector" (the bearer token in the screenshot is invalid)
+![Screenshot](docs/images/portflow-dashboard-redacted.png)
+
 ## Output Behavior
 
 ### Single student (`1`)
