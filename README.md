@@ -106,6 +106,31 @@ On start, the script:
 - Prints compact table with goal abbreviations (`OC`, `KO`, etc.).
 - Self-evaluations are rendered as `?`.
 
+Example (anonymized):
+
+```text
+Naam       | OC   | KO   | JKO  | KPM  | PL   | BD      | SW   | FO   | PH      | RE
+---------------------------------------------------------------------------------------
+Student 01 |      |      |      |      |      |         |      | 1    | 1       | 1
+Student 02 | 3    | 3    | 2    | 2    | 2    | 2       | 2    | ?    | 2       | 3
+Student 03 |      |      |      |      |      | 2       | 1    |      | ?, 1    | 2
+Student 04 |      |      | 2    |      | ?    | 2, 2    | 2    | 2    | 2       |
+Student 05 |      |      |      |      | ?    | ?       | ?    |      | ?       | ?
+Student 06 | 1    | 1    | 1, 1 | 1    | 1    | 2       | 2    | 2    | 1       | 1
+Student 07 | ?, ? | ?, ? | ?, ? | ?, ? | ?, ? | ?, 1, ? | 1, 1 | ?    | ?, ?, ? | 1
+Student 08 |      |      | 3    |      | 2    | 3, 3    | 2    | ?    | ?       | 2
+Student 09 | ?    | ?    | ?    |      |      | 1       | ?    | ?    | 2       |
+Student 10 | ?, ? | ?, ? | ?, ? | ?, ? | 2    | 2       | 2, ? | 2    | 2       | 1
+Student 11 | 1    | 1    | 1    | 2    | ?    | 2       | ?    | ?    | ?       | ?
+Student 12 | 2, ? | 2, ? | 2, ? | 2, ? | ?    | 2       | ?    | ?, 1 | 1       | 2
+Student 13 | 1    | ?    |      |      | 2    | 1       | 2    |      | 1       |
+Student 14 |      |      |      |      |      |         | 1    |      |         |
+Student 15 |      |      |      |      |      |         |      |      |         |
+Student 16 | 1    | 1    | 1    | 1, ? | 1    | 2       | 2    |      | 2       | ?
+Student 17 | ?    | ?    | ?    | ?    | ?, ? | ?       | ?, ? | ?, ? | ?, ?    | ?
+Student 18 | ?    | ?    | ?    | ?    | 2    | 2       | 2    | 2    | 2       |
+```
+
 ### Self vs non-self precedence
 
 For the same evaluation request/group:
