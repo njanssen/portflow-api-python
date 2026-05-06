@@ -1,2 +1,129 @@
 # portflow-api-python
-A collection of python scripts to query the portflow API to generate progress reports for students.
+
+Generate student evaluation overviews from the Portflow API.
+
+This repository currently contains one main script:
+
+- `portflow.py`
+
+It can show:
+
+- A single student overview in the terminal
+- A CSV export for all selected students
+- A compact table for selected students
+
+## Requirements
+
+- Python 3.10+
+- `requests` package
+
+Install dependency:
+
+```bash
+pip install requests
+```
+
+## Configuration
+
+Main settings are at the top of `portflow.py`:
+
+- `BASE_URL`
+- `SECTION_ID`
+- `CURRENT_SEMESTER_START`
+- `CURRENT_SEMESTER_END`
+- `CURRENT_COACH_STUDENTS`
+- `BEARER_TOKEN`
+
+Notes:
+
+- If `BEARER_TOKEN` is empty, the script prompts for one.
+- `CURRENT_COACH_STUDENTS` is the default student subset.
+- If `CURRENT_COACH_STUDENTS` is empty, the script automatically falls back to all visible shared portfolios.
+
+## Run
+
+Default run:
+
+```bash
+python3 portflow.py
+```
+
+Show all students you can see (not only `CURRENT_COACH_STUDENTS`):
+
+```bash
+python3 portflow.py --all
+```
+
+Equivalent explicit mode:
+
+```bash
+python3 portflow.py --students all
+```
+
+## CLI Options
+
+- `--all`
+	- Shortcut for `--students all`
+- `--students {coach,all}`
+	- `coach` (default): filter to `CURRENT_COACH_STUDENTS`
+	- `all`: use all students with shared portfolios
+- `--dump-schema`
+	- Write observed API schema paths/types to `schema_inventory.txt`
+- `--debug-api`
+	- Log all API calls and raw response bodies to `api_debug_log.jsonl`
+- `--debug-pending`
+	- Log evaluation include/skip decisions to `pending_debug.json`
+
+## Runtime Flow
+
+On start, the script:
+
+1. Prints current semester range from `CURRENT_SEMESTER_START` and `CURRENT_SEMESTER_END`
+2. Fetches students (coach subset by default, or all with `--all`)
+3. Shows students list
+4. Asks output method:
+	 - `1` Single student
+	 - `2` All students (export CSV)
+	 - `3` Students in table
+5. Shows output once and exits
+
+## Output Behavior
+
+### Single student (`1`)
+
+- Shows per-goal evaluations in terminal.
+- Includes self-evaluations.
+- Self-evaluations are shown as:
+	- `? (self, <date>)`
+
+### CSV export (`2`)
+
+- Writes `results.csv`.
+- Uses selected student set (coach subset or all).
+
+### Table (`3`)
+
+- Prints compact table with goal abbreviations (`OC`, `KO`, etc.).
+- Self-evaluations are rendered as `?`.
+
+### Self vs non-self precedence
+
+For the same evaluation request/group:
+
+- If a non-self evaluation exists (`coach`, `assessor`, etc.), only non-self is shown.
+- Self-evaluation is shown only when no non-self evaluation exists for that same request/group.
+
+## Debug Artifacts
+
+When enabled:
+
+- `--debug-api` -> `api_debug_log.jsonl`
+	- One JSON object per request
+	- Includes URL, params, status code, error, response body
+- `--debug-pending` -> `pending_debug.json`
+	- Include/skip decisions and rendered values per evaluation
+
+## Security
+
+- Do not commit live bearer tokens to version control.
+- Prefer environment variables or prompt input for tokens in shared repos.
