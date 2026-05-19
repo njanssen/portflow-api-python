@@ -5,12 +5,14 @@ Generate student evaluation overviews from the Portflow API.
 This repository currently contains one main script:
 
 - `portflow.py`
+- `portflow_export_full.py`
 
 It can show:
 
 - A single student overview in the terminal
 - A CSV export for all selected students
 - A compact table for selected students
+- A full student portfolio export to folders (evaluations + skills + evidence)
 
 ## Requirements
 
@@ -60,6 +62,24 @@ Equivalent explicit mode:
 python3 portflow.py --students all
 ```
 
+Full collection export for one selected student:
+
+```bash
+python3 portflow_export_full.py
+```
+
+Optional arguments:
+
+```bash
+python3 portflow_export_full.py --students-source section --section-id 72086 --output-dir ./exports
+```
+
+Or fetch students from shared collections:
+
+```bash
+python3 portflow_export_full.py --students-source shared
+```
+
 ## CLI Options
 
 - `--all`
@@ -102,6 +122,41 @@ Screenshot shows how to capture a bearer token using Safari browser and "inspect
 ![Screenshot](docs/images/portflow-dashboard-redacted.png)
 
 ## Output Behavior
+
+### Full export (`portflow_export_full.py`)
+
+Flow:
+
+1. Script vraagt om een student te kiezen.
+2. Script maakt een nieuwe map met `studentnaam + datum`.
+3. Script exporteert per evaluatie map:
+	 - bewijsstukken (bijlagen)
+	- bewijsstukken die als `@evidence` mention in evaluatietekst staan
+	- per `@evidence` mention een submap met het gelinkte bestand en alle verwijzende opmerkingen/zelfevaluaties/beoordelingen
+	 - opmerkingen (feedback/comments)
+	 - zelfevaluaties
+	 - beoordelingen (incl. beoordelaar, datum en niveau waar beschikbaar)
+4. Script maakt daarnaast 10 vaardigheidsmappen met een `overzicht.txt` per vaardigheid.
+5. Script maakt in de root een samenvattend `overzicht.txt` met alle gevonden items.
+6. Script maakt in de root een `index.csv` met per item: evaluatie-map, vaardigheid, code, auteur, datum, type, niveau en aantal bijlagen.
+
+Globale structuur:
+
+```text
+/Student Naam dd-mm-yyyy/
+	overzicht.txt
+	index.csv
+	/evaluatie dd-mm-yyyy titel-van-de-evaluatie/
+		bewijsstuk 1.pdf
+		opmerking 1 - auteur - dd-mm-yyyy.txt
+		zelfevaluatie - auteur - dd-mm-yyyy.txt
+		beoordeling - auteur - dd-mm-yyyy - niveau.txt
+	/vaardigheid 1 OC Overzicht creeren/
+		overzicht.txt
+	...
+	/vaardigheid 10 RE Reflecteren/
+		overzicht.txt
+```
 
 ### Single student (`1`)
 
