@@ -3,14 +3,111 @@ import csv
 import time
 import argparse
 import json
+import os
 from datetime import datetime
+from pathlib import Path
+
+
+def load_env_file(env_path: Path | None = None) -> None:
+    env_file = env_path or (Path(__file__).resolve().parent / ".env")
+    if not env_file.exists():
+        return
+
+    raw_lines = env_file.read_text(encoding="utf-8").splitlines()
+    i = 0
+    while i < len(raw_lines):
+        line = raw_lines[i].strip()
+        i += 1
+
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+
+        # Support multi-line values that start with [ or {
+        if value and value[0] in ("[", "{"):
+            depth = value.count("[") + value.count("{") - value.count("]") - value.count("}")
+            while depth > 0 and i < len(raw_lines):
+                chunk = raw_lines[i].strip()
+                i += 1
+                value += chunk
+                depth += chunk.count("[") + chunk.count("{") - chunk.count("]") - chunk.count("}")
+        elif len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+
+        os.environ[key] = value
+
+
+def parse_coach_students(raw_json: str):
+    if not raw_json.strip():
+        return []
+
+    import re as _re
+    raw_json = _re.sub(r",\s*([\]\}])", r"\1", raw_json)  # strip trailing commas
+    try:
+        data = json.loads(raw_json)
+    except json.JSONDecodeError:
+        print("Waarschuwing: PORTFLOW_COACH_STUDENTS_JSON bevat ongeldige JSON. Gebruik lege lijst.")
+        return []
+
+    if not isinstance(data, list):
+        print("Waarschuwing: PORTFLOW_COACH_STUDENTS_JSON moet een JSON lijst zijn. Gebruik lege lijst.")
+        return []
+
+    students = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+
+        # Separator entry: {"separator": true}
+        if entry.get("separator") is True:
+            students.append((SEPARATOR_SENTINEL, None, "", "", ""))
+            continue
+
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            continue
+
+        start_date_raw = str(entry.get("start_date") or "").strip()
+        start_date = None
+        if start_date_raw:
+            try:
+                start_date = datetime.strptime(start_date_raw, "%Y-%m-%d").date()
+            except ValueError:
+                print(
+                    "Waarschuwing: ongeldige startdatum '",
+                    start_date_raw,
+                    "' voor student ",
+                    name,
+                    ". Verwacht YYYY-MM-DD.",
+                    sep="",
+                )
+
+        semester = str(entry.get("semester") or "").strip()
+        tribe = str(entry.get("tribe") or "").strip()
+        gilde = str(entry.get("gilde") or "").strip()
+
+        students.append((name, start_date, semester, tribe, gilde))
+
+    return students
+
+
+load_env_file()
 
 BASE_URL = "https://portfolio.drieam.app/api/v1"
 PER_PAGE = 200
-BEARER_TOKEN = ""
+BEARER_TOKEN = os.getenv("PORTFLOW_BEARER_TOKEN", "").strip()
 
 SECTION_ID = "72086"
-CURRENT_SEMESTER_START = datetime(2026, 2, 3).date()
+CURRENT_SEMESTER_START = datetime(2026, 2, 12).date()
 CURRENT_SEMESTER_END = datetime(2026, 6, 30).date()
 
 GOALS = {
@@ -39,15 +136,21 @@ GOAL_COLUMNS = [
     ("Reflecteren",                 "RE"),
 ]
 
-# (naam, optionele startdatum huidig semester)
-# Vul een datum in als de student later is gestart dan CURRENT_SEMESTER_START.
-CURRENT_COACH_STUDENTS = [
-]
+# Sentinel waarde in .env die een horizontale scheidingslijn in de tabel veroorzaakt
+SEPARATOR_SENTINEL = "---"
+
+# JSON lijst met studentconfig uit .env.
+# Voorbeeld item: {"name":"Student Naam","start_date":"2026-04-18"}
+CURRENT_COACH_STUDENTS = parse_coach_students(
+    os.getenv("PORTFLOW_COACH_STUDENTS_JSON", "").strip()
+)
 
 # Afgeleide lookups voor snel gebruik
-COACH_STUDENT_NAMES = {name for name, _ in CURRENT_COACH_STUDENTS}
-COACH_STUDENT_START_DATES = {name: start for name, start in CURRENT_COACH_STUDENTS if start is not None}
-
+COACH_STUDENT_NAMES = {name for name, *_ in CURRENT_COACH_STUDENTS}
+COACH_STUDENT_START_DATES = {name: start for name, start, *_ in CURRENT_COACH_STUDENTS if start is not None}
+COACH_STUDENT_SEMESTER = {name: sem for name, _, sem, *_ in CURRENT_COACH_STUDENTS if sem}
+COACH_STUDENT_TRIBE = {name: tribe for name, _, _sem, tribe, *_ in CURRENT_COACH_STUDENTS if tribe}
+COACH_STUDENT_GILDE = {name: gilde for name, _, _sem, _tribe, gilde in CURRENT_COACH_STUDENTS if gilde}
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -67,15 +170,27 @@ def parse_args():
         help="Log evaluatie-beslissingen (waarom wel/geen ?) naar pending_debug.json",
     )
     parser.add_argument(
-        "--students",
-        choices=["coach", "all"],
-        default="coach",
-        help="Kies studentenset: coach (standaard) of all (alle gedeelde portfolios).",
+        "--semester",
+        choices=["1", "2", "3"],
+        default=None,
+        help="Semester scope: 1=huidig, 2=alles, 3=sep25-jan26",
     )
     parser.add_argument(
-        "--all",
+        "--students",
+        choices=["1", "2", "3"],
+        default=None,
+        help="Student ophaal methode: 1=shared collection, 2=section, 3=coach array",
+    )
+    parser.add_argument(
+        "--output",
+        choices=["1", "2", "3"],
+        default=None,
+        help="Output optie: 1=enkele student, 2=CSV export, 3=tabel",
+    )
+    parser.add_argument(
+        "--anoniem",
         action="store_true",
-        help="Shortcut voor --students=all",
+        help="Vervang alle studentnamen door ******* in de uitvoer",
     )
     return parser.parse_args()
 
@@ -84,7 +199,6 @@ ARGS = parse_args()
 DUMP_SCHEMA = ARGS.dump_schema
 DEBUG_API = ARGS.debug_api
 DEBUG_PENDING = ARGS.debug_pending
-STUDENT_MODE = "all" if ARGS.all else ARGS.students
 
 API_DEBUG_FILE = "api_debug_log.jsonl"
 PENDING_DEBUG_FILE = "pending_debug.json"
@@ -255,8 +369,13 @@ def name_to_initials(full_name: str) -> str:
     return "".join(letters)
 
 
-def student_order_and_width(students: dict) -> tuple[list[str], int]:
-    ordered_names = sorted(students.keys())
+def student_order_and_width(students: dict, preferred_order: list[str] | None = None) -> tuple[list[str], int]:
+    if preferred_order:
+        ordered_names = [n for n in preferred_order if n in students]
+        # append any names not in preferred_order at the end
+        ordered_names += sorted(n for n in students if n not in set(ordered_names))
+    else:
+        ordered_names = sorted(students.keys())
     width = max(2, len(str(len(ordered_names))))
     return ordered_names, width
 
@@ -277,6 +396,25 @@ def resolve_student_selection(selection: str, ordered_names: list[str], students
 
     return None
 
+
+def choose_semester_scope() -> str:
+    if ARGS.semester:
+        if ARGS.semester == "2":
+            return "all"
+        if ARGS.semester == "3":
+            return "sep25_jan26"
+        return "current"
+    print("\nVan welk semester wil je de evaluaties zien?")
+    print("1) Huidig semester (vanaf 3-feb-26) [standaard]")
+    print("2) Alle semesters")
+    print("3) Semester sep25 t/m jan26 (1-sep-2025 t/m 31-jan-2026)")
+
+    choice = input("Voer 1, 2 of 3 in (standaard 1): ").strip()
+    if choice == "2":
+        return "all"
+    if choice == "3":
+        return "sep25_jan26"
+    return "current"
 
 def request_with_retries(url, headers, params=None, max_attempts=3):
     attempt = 0
@@ -481,7 +619,8 @@ def resolve_level(evaluation):
 
     for lvl in evaluation.get("level_set", []):
         if lvl["id"] == level_id:
-            return lvl["label"]
+            label = lvl["label"]
+            return "0" if label == "Startniveau" else label
 
     return None
 
@@ -502,13 +641,6 @@ def pending_reason(item, evaluation):
         return "self_not_confirmed_scored"
     return None
 
-def evaluation_group_key(goal_id, item, evaluation):
-    if evaluation and evaluation.get("review_request_id"):
-        return f"goal:{goal_id}|review_request_id:{evaluation.get('review_request_id')}"
-
-    title = (evaluation or {}).get("review_request_title") or ""
-    submitted_at = (evaluation or {}).get("submitted_at") or item.get("date") or ""
-    return f"goal:{goal_id}|title:{title}|submitted_at:{submitted_at}"
 def resolve_reviewer_name(item, evaluation=None):
     # Best-effort extraction of the assessor/reviewer name from the API payload.
     candidates = [
@@ -641,8 +773,11 @@ def date_in_selected_semester(raw_value, semester_scope: str, override_start=Non
     if dt is None:
         return False
 
+    if semester_scope == "sep25_jan26":
+        return SEMESTER_SEP25_JAN26_START <= dt.date() <= SEMESTER_SEP25_JAN26_END
+
     start = override_start if override_start is not None else CURRENT_SEMESTER_START
-    return start <= dt.date() <= CURRENT_SEMESTER_END
+    return dt.date() >= start
 
 
 def resolve_evaluation_date(item, evaluation=None):
@@ -713,8 +848,6 @@ def collect_results(
     semester_scope="current",
     override_start=None,
     include_ungraded=False,
-    include_self_evaluations=False,
-    self_evaluations_as_question=False,
 ):
     results = []
 
@@ -749,21 +882,24 @@ def collect_results(
                 )
                 continue
 
-            eligible_items = []
-
             for item in feedback_items:
                 observe_schema(item, "portfolios.goals.feedback_items.item")
                 if item.get("type") != "criterion_evaluation":
                     continue
 
-                role = item.get("role")
                 evaluation = item.get("evaluation")
                 pending = pending_reason(item, evaluation)
 
-                if role == "self" and not include_self_evaluations:
-                    continue
-
                 if not evaluation and not include_ungraded:
+                    log_pending_debug_event({
+                        "student_name": student_name,
+                        "portfolio_id": portfolio_id,
+                        "goal_id": goal_id,
+                        "goal_name": goal_name,
+                        "role": item.get("role"),
+                        "decision": "skip",
+                        "reason": "missing_evaluation",
+                    })
                     continue
 
                 if evaluation:
@@ -771,78 +907,104 @@ def collect_results(
 
                 evaluation_datetime = resolve_evaluation_date(item, evaluation)
                 if not date_in_selected_semester(evaluation_datetime, semester_scope, override_start):
+                    log_pending_debug_event({
+                        "student_name": student_name,
+                        "portfolio_id": portfolio_id,
+                        "goal_id": goal_id,
+                        "goal_name": goal_name,
+                        "role": item.get("role"),
+                        "decision": "skip",
+                        "reason": "outside_semester",
+                        "pending_reason": pending,
+                        "review_request_scored": (evaluation or {}).get("review_request_scored"),
+                        "level": (evaluation or {}).get("level"),
+                    })
                     continue
 
-                details = []
-                level = resolve_level(evaluation) if evaluation else None
+                # Keep historical behavior for non-table modes: self evaluations are hidden.
+                if item.get("role") == "self" and not include_ungraded:
+                    log_pending_debug_event({
+                        "student_name": student_name,
+                        "portfolio_id": portfolio_id,
+                        "goal_id": goal_id,
+                        "goal_name": goal_name,
+                        "role": item.get("role"),
+                        "decision": "skip",
+                        "reason": "self_role_hidden",
+                        "pending_reason": pending,
+                    })
+                    continue
 
-                if role == "self":
-                    # Always show self-evaluation as a question mark.
+                level = resolve_level(evaluation)
+                is_pending = pending is not None
+
+                if is_pending:
+                    if not include_ungraded:
+                        log_pending_debug_event({
+                            "student_name": student_name,
+                            "portfolio_id": portfolio_id,
+                            "goal_id": goal_id,
+                            "goal_name": goal_name,
+                            "role": item.get("role"),
+                            "decision": "skip",
+                            "reason": "pending_hidden",
+                            "pending_reason": pending,
+                            "review_request_scored": (evaluation or {}).get("review_request_scored"),
+                            "level": (evaluation or {}).get("level"),
+                            "review_request_title": (evaluation or {}).get("review_request_title"),
+                        })
+                        continue
+
+                    # In table mode, pending items are shown as '?'.
                     evaluation_text = "?"
-                    details.append("self")
-                    evaluation_date = format_short_date(evaluation_datetime)
-                    if evaluation_date:
-                        details.append(evaluation_date)
                 else:
-                    if pending is not None:
-                        if not include_ungraded:
-                            continue
-                        evaluation_text = "?"
-                    else:
-                        if level is None:
-                            continue
-                        evaluation_text = str(level)
-                        reviewer_name = resolve_reviewer_name(item, evaluation)
-                        initials = name_to_initials(reviewer_name) if reviewer_name else ""
-                        if initials:
-                            details.append(initials)
-                        evaluation_date = format_short_date(evaluation_datetime)
-                        if evaluation_date:
-                            details.append(evaluation_date)
+                    # Avoid exposing scored self-evaluations in table mode.
+                    if item.get("role") == "self":
+                        log_pending_debug_event({
+                            "student_name": student_name,
+                            "portfolio_id": portfolio_id,
+                            "goal_id": goal_id,
+                            "goal_name": goal_name,
+                            "role": item.get("role"),
+                            "decision": "skip",
+                            "reason": "self_scored_hidden",
+                            "review_request_scored": (evaluation or {}).get("review_request_scored"),
+                            "level": (evaluation or {}).get("level"),
+                        })
+                        continue
 
-                eligible_items.append({
-                    "item": item,
-                    "evaluation": evaluation,
-                    "evaluation_text": evaluation_text,
-                    "details": details,
-                    "pending": pending,
-                })
+                    if level is None:
+                        log_pending_debug_event({
+                            "student_name": student_name,
+                            "portfolio_id": portfolio_id,
+                            "goal_id": goal_id,
+                            "goal_name": goal_name,
+                            "role": item.get("role"),
+                            "decision": "skip",
+                            "reason": "missing_level_unexpected",
+                            "review_request_scored": (evaluation or {}).get("review_request_scored"),
+                        })
+                        continue
 
-            # Prefer non-self evaluations over self evaluations per review request.
-            grouped = {}
-            for candidate in eligible_items:
-                group_key = evaluation_group_key(
-                    goal_id,
-                    candidate["item"],
-                    candidate["evaluation"],
-                )
-                grouped.setdefault(group_key, []).append(candidate)
+                    evaluation_text = str(level)
 
-            selected_items = []
-            for group_candidates in grouped.values():
-                non_self = [
-                    c for c in group_candidates if c["item"].get("role") != "self"
-                ]
-                if non_self:
-                    selected_items.extend(non_self)
-                else:
-                    selected_items.extend(group_candidates)
+                reviewer_name = resolve_reviewer_name(item, evaluation)
+                initials = name_to_initials(reviewer_name) if reviewer_name else ""
 
-            for candidate in selected_items:
-                item = candidate["item"]
-                evaluation = candidate["evaluation"]
-                pending = candidate["pending"]
-                evaluation_text = candidate["evaluation_text"]
-                details = candidate["details"]
+                details = []
+                if (not is_pending) and initials:
+                    details.append(initials)
+                evaluation_date = format_short_date(evaluation_datetime)
+                if (not is_pending) and evaluation_date:
+                    details.append(evaluation_date)
 
-                rendered = evaluation_text
                 if details:
-                    rendered = f"{evaluation_text} ({', '.join(details)})"
+                    evaluation_text = f"{level} ({', '.join(details)})"
 
                 results.append({
                     "student_name": student_name,
                     "goal_name": goal_name,
-                    "evaluation": rendered,
+                    "evaluation": evaluation_text
                 })
 
                 log_pending_debug_event({
@@ -852,7 +1014,7 @@ def collect_results(
                     "goal_name": goal_name,
                     "role": item.get("role"),
                     "decision": "include",
-                    "rendered": rendered,
+                    "rendered": evaluation_text,
                     "pending_reason": pending,
                     "review_request_scored": (evaluation or {}).get("review_request_scored"),
                     "level": (evaluation or {}).get("level"),
@@ -864,14 +1026,7 @@ def collect_results(
 
 
 def print_student_evaluations(token, student_name, student_data, semester_scope="current", override_start=None):
-    results = collect_results(
-        token,
-        student_name,
-        student_data,
-        semester_scope,
-        override_start=override_start,
-        include_self_evaluations=True,
-    )
+    results = collect_results(token, student_name, student_data, semester_scope, override_start=override_start)
     if results == "TOKEN_EXPIRED":
         return "TOKEN_EXPIRED"
 
@@ -909,35 +1064,71 @@ def print_coach_table(results, all_names=None):
         level = extract_level_short(r["evaluation"])
         student_goals.setdefault(s, {}).setdefault(g, []).append(level)
 
-    # Ensure all expected names are present (even with 0 evaluations)
+    # Ensure all expected names are present (even with 0 evaluations); skip separators
     if all_names:
         for name in all_names:
-            student_goals.setdefault(name, {})
+            if name != SEPARATOR_SENTINEL:
+                student_goals.setdefault(name, {})
 
-    # Determine one shared width for all vaardigheid columns.
-    skill_col_width = max(len(abbrev) for _, abbrev in GOAL_COLUMNS)
-    for full_name, _ in GOAL_COLUMNS:
+    # Determine column widths
+    col_widths = []
+    for full_name, abbrev in GOAL_COLUMNS:
+        width = len(abbrev)
         for goals in student_goals.values():
             cell = ", ".join(goals.get(full_name, []))
-            skill_col_width = max(skill_col_width, len(cell))
+            width = max(width, len(cell))
+        col_widths.append(width)
 
     name_width = max(len("Naam"), max(len(s) for s in student_goals))
+    sem_width = max(len("Semester"), max((len(f"Semester {COACH_STUDENT_SEMESTER.get(s, '')}".strip() if COACH_STUDENT_SEMESTER.get(s) else "") for s in student_goals), default=0))
+    tribe_width = max(len("Tribe"), max((len(COACH_STUDENT_TRIBE.get(s, "")) for s in student_goals), default=0))
+    gilde_width = max(len("Gilde"), max((len(COACH_STUDENT_GILDE.get(s, "")) for s in student_goals), default=0))
 
     # Header
     header = f"{'Naam':<{name_width}}"
-    for _, abbrev in GOAL_COLUMNS:
-        header += f" | {abbrev:<{skill_col_width}}"
+    for (_, abbrev), w in zip(GOAL_COLUMNS, col_widths):
+        header += f" | {abbrev:<{w}}"
+    header += f" | {'Tribe':<{tribe_width}}"
+    header += f" | {'Semester':<{sem_width}}"
+    header += f" | {'Gilde':<{gilde_width}}"
     print()
     print(header)
     print("-" * len(header))
 
-    # Rows (sorted by name)
-    for student_name in sorted(student_goals.keys()):
+    # Rows (in .env order if available, otherwise alphabetical)
+    row_order = all_names if all_names else sorted(student_goals.keys())
+    for student_name in row_order:
+        if student_name == SEPARATOR_SENTINEL:
+            print("-" * len(header))
+            continue
+        if student_name not in student_goals:
+            continue
         goals = student_goals[student_name]
-        row = f"{student_name:<{name_width}}"
-        for full_name, _ in GOAL_COLUMNS:
+        display_name = "*******" if ARGS.anoniem else student_name
+        sem_raw = COACH_STUDENT_SEMESTER.get(student_name, "")
+        sem = f"Semester {sem_raw}" if sem_raw else ""
+        tribe = COACH_STUDENT_TRIBE.get(student_name, "")
+        gilde = COACH_STUDENT_GILDE.get(student_name, "")
+        _alert_goals = {"Overzicht creëren", "Kritisch oordelen", "Juiste kennis ontwikkelen", "Kwalitatief Product Maken"}
+        _alert = all(not goals.get(fn) for fn, _ in GOAL_COLUMNS if fn in _alert_goals)
+        _soft_goals = {"Plannen", "Boodschap Delen", "Samenwerken", "Flexibel opstellen", "Pro-actief handelen", "Reflecteren"}
+        _soft_empty = sum(1 for fn, _ in GOAL_COLUMNS if fn in _soft_goals and not goals.get(fn))
+        _soft_all   = _soft_empty == len(_soft_goals)   # alle 6 leeg → oranje
+        _soft_most  = _soft_empty in (4, 5)             # 4 of 5 leeg → geel
+        row = f"{display_name:<{name_width}}"
+        for (full_name, _), w in zip(GOAL_COLUMNS, col_widths):
             cell = ", ".join(goals.get(full_name, []))
-            row += f" | {cell:<{skill_col_width}}"
+            if _alert and full_name in _alert_goals and not cell:
+                row += f" | \033[41m{' ' * w}\033[0m"
+            elif _soft_all and full_name in _soft_goals and not cell:
+                row += f" | \033[43m{' ' * w}\033[0m"
+            elif _soft_most and full_name in _soft_goals and not cell:
+                row += f" | \033[33m{' ' * w}\033[0m"
+            else:
+                row += f" | {cell:<{w}}"
+        row += f" | {tribe:<{tribe_width}}"
+        row += f" | {sem:<{sem_width}}"
+        row += f" | {gilde:<{gilde_width}}"
         print(row)
 
     print()
@@ -972,138 +1163,204 @@ def export_csv_wide(results):
     print("CSV exported to results.csv")
 
 # ------------------------
-# One-shot main flow
+# Main loop (Ctrl+C safe)
 # ------------------------
 
-def main():
-    semester_scope = "current"
-    print(
-        f"Current semester: {CURRENT_SEMESTER_START.isoformat()} to {CURRENT_SEMESTER_END.isoformat()}"
-    )
 
-    effective_student_mode = STUDENT_MODE
-    if not CURRENT_COACH_STUDENTS and effective_student_mode != "all":
-        effective_student_mode = "all"
-        print(
-            "CURRENT_COACH_STUDENTS is empty; showing all students with shared portfolios."
-        )
-
-    token = get_bearer_token()
-    shared_items = get_shared_collections(token)
-    if shared_items == "TOKEN_EXPIRED":
-        print("Token expired, please enter a new one.")
-        token = get_bearer_token(force_prompt=True)
-        shared_items = get_shared_collections(token)
-
-    if shared_items in (None, "TOKEN_EXPIRED"):
-        print("Could not fetch shared collections.")
-        return
-
-    all_students = extract_students(shared_items)
-    if effective_student_mode == "all":
-        students = all_students
-    else:
-        students = {
-            name: data
-            for name, data in all_students.items()
-            if name in COACH_STUDENT_NAMES
-        }
-        missing_names = [
-            name for name in COACH_STUDENT_NAMES if name not in all_students
-        ]
-        if missing_names:
-            print("These coach students were not found in shared collections:")
-            for missing_name in missing_names:
-                print(f"  - {missing_name}")
-
-    if not students:
-        print("No students found.")
-        return
-
-    ordered_names, number_width = student_order_and_width(students)
-
-    print("\nStudents:")
-    for idx, name in enumerate(ordered_names, start=1):
-        print(f"- {idx:0{number_width}d} - {name}")
-    if effective_student_mode != "all":
-        print("Use --all to show all students that have shared portfolio.")
-
-    print("\nChoose output method:")
-    print("1) Single student")
-    print("2) All students (export to CSV)")
-    print("3) Students in table")
-
-    choice = input("Enter 1, 2, or 3: ").strip()
-
-    if choice == "1":
-        selection = input(
-            "Enter student number (e.g. 01) or exact name as shown: "
-        ).strip()
-        name = resolve_student_selection(selection, ordered_names, students)
-        if not name:
-            print("Student not found (use number or exact name).")
-            return
-
-        status = print_student_evaluations(
-            token,
-            name,
-            students[name],
-            semester_scope,
-            override_start=COACH_STUDENT_START_DATES.get(name),
-        )
-        if status == "TOKEN_EXPIRED":
-            print("Token expired.")
-
-    elif choice == "2":
-        all_results = []
-        for idx, name in enumerate(ordered_names, start=1):
-            print(f"Processing {idx:0{number_width}d} - {name}...")
-            res = collect_results(
-                token,
-                name,
-                students[name],
-                semester_scope,
-                override_start=COACH_STUDENT_START_DATES.get(name),
-            )
-            if res == "TOKEN_EXPIRED":
-                print("Token expired.")
-                break
-            all_results.extend(res)
-        else:
-            export_csv_wide(all_results)
-
-    elif choice == "3":
-        table_names = ordered_names
-        all_results = []
-        for idx, name in enumerate(table_names, start=1):
-            override = COACH_STUDENT_START_DATES.get(name)
-            print(f"Processing {idx}/{len(table_names)} - {name}...")
-            res = collect_results(
-                token,
-                name,
-                students[name],
-                semester_scope,
-                override_start=override,
-                include_ungraded=True,
-                include_self_evaluations=True,
-                self_evaluations_as_question=True,
-            )
-            if res == "TOKEN_EXPIRED":
-                print("Token expired.")
-                break
-            all_results.extend(res)
-        else:
-            print_coach_table(all_results, all_names=table_names)
-
-    else:
-        print("Invalid option.")
-
-    maybe_write_schema_report()
-    maybe_write_pending_debug_report()
+def _show_progress(current: int, total: int, label: str, bar_width: int = 25) -> None:
+    filled = int(bar_width * current / total)
+    arrow = ">" if filled < bar_width else "="
+    bar = "=" * filled + arrow + " " * (bar_width - filled - 1)
+    print(f"\r[{bar}] {current}/{total}  {label:<40}", end="", flush=True)
 
 
 try:
-    main()
+    _cli_mode = bool(ARGS.semester and ARGS.students and ARGS.output)
+    if _cli_mode:
+        print(f"Voortgang portflow {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
+    while True:
+        semester_scope = choose_semester_scope()
+        token = get_bearer_token()
+
+        while True:
+            if not _cli_mode:
+                print("\nChoose student fetching method:")
+                print("1) All students with shared collection")
+                print("2) Students from section (coachingsdashboard)")
+                print("3) Huidige coach studenten volgens array")
+            fetch_choice = (ARGS.students or input("Enter 1, 2 or 3 (or 'q' to quit): ").strip())
+
+            if fetch_choice.lower() == "q":
+                print("Exiting gracefully. Goodbye!")
+                exit()
+
+            if fetch_choice == "1":
+                shared_items = get_shared_collections(token)
+                if shared_items == "TOKEN_EXPIRED":
+                    print("Token expired, please enter a new one.")
+                    token = get_bearer_token(force_prompt=True)
+                    continue
+                students = extract_students(shared_items)
+                break
+
+            elif fetch_choice == "2":
+                section_id = get_section_id()
+                students = get_students_from_section(token, section_id)
+                if students == "TOKEN_EXPIRED":
+                    print("Token expired, please enter a new one.")
+                    token = get_bearer_token(force_prompt=True)
+                    continue
+                break
+
+            elif fetch_choice == "3":
+                shared_items = get_shared_collections(token)
+                if shared_items == "TOKEN_EXPIRED":
+                    print("Token expired, please enter a new one.")
+                    token = get_bearer_token(force_prompt=True)
+                    continue
+                all_students = extract_students(shared_items)
+                students = {
+                    name: data
+                    for name, data in all_students.items()
+                    if name in COACH_STUDENT_NAMES
+                }
+                missing_names = [
+                    name for name in COACH_STUDENT_NAMES
+                    if name != SEPARATOR_SENTINEL and name not in all_students
+                ]
+                if missing_names:
+                    print("These coach students were not found in shared collections:")
+                    for missing_name in missing_names:
+                        print(f"  - {missing_name}")
+                break
+
+            else:
+                print("Invalid option, try again.")
+
+        if not students:
+            print("No students found.")
+            continue
+
+        env_order = [name for name, *_ in CURRENT_COACH_STUDENTS]
+        ordered_names, number_width = student_order_and_width(students, preferred_order=env_order)
+
+        if not _cli_mode:
+            print("\nStudents:")
+            for idx, name in enumerate(ordered_names, start=1):
+                print(f"- {idx:0{number_width}d} - {name}")
+
+            print("\nChoose output option:")
+            print("1) Single student")
+            print("2) All students (export to CSV)")
+            print("3) Studenten in array weergeven als tabel")
+            print("99) Enter student name or id")
+
+        choice = (ARGS.output or input(
+            "Enter 1, 2, 3, 99, a student number/name (or 'm' for main menu): "
+        ).strip())
+
+        if choice.lower() == "m":
+            continue
+
+        if choice == "1":
+            selection = input(
+                "Enter student number (e.g. 01) or exact name as shown: "
+            ).strip()
+            name = resolve_student_selection(selection, ordered_names, students)
+            if not name:
+                print("Student not found (use number or exact name).")
+                continue
+
+            status = print_student_evaluations(token, name, students[name], semester_scope, override_start=COACH_STUDENT_START_DATES.get(name))
+            if status == "TOKEN_EXPIRED":
+                print("Token expired, returning to main menu.")
+                continue
+            maybe_write_schema_report()
+            maybe_write_pending_debug_report()
+
+        elif choice == "99":
+            selection = input(
+                "Enter student number (e.g. 13 or 02) or exact name as shown: "
+            ).strip()
+            name = resolve_student_selection(selection, ordered_names, students)
+            if not name:
+                print("Student not found (use number or exact name).")
+                continue
+
+            status = print_student_evaluations(token, name, students[name], semester_scope, override_start=COACH_STUDENT_START_DATES.get(name))
+            if status == "TOKEN_EXPIRED":
+                print("Token expired, returning to main menu.")
+                continue
+            maybe_write_schema_report()
+            maybe_write_pending_debug_report()
+
+        elif choice == "2":
+            all_results = []
+            total_students = len(ordered_names)
+            for idx, name in enumerate(ordered_names, start=1):
+                _show_progress(idx, total_students, name)
+                res = collect_results(token, name, students[name], semester_scope, override_start=COACH_STUDENT_START_DATES.get(name))
+                if res == "TOKEN_EXPIRED":
+                    print()
+                    print("Token expired, returning to main menu.")
+                    break
+                all_results.extend(res)
+            else:
+                print()
+                export_csv_wide(all_results)
+                maybe_write_schema_report()
+                maybe_write_pending_debug_report()
+
+        elif choice == "3":
+            coach_names = [
+                name for name, *_ in CURRENT_COACH_STUDENTS
+                if name == SEPARATOR_SENTINEL or name in students
+            ]
+            if not coach_names:
+                print("No coach students found in current student list.")
+                continue
+
+            all_results = []
+            real_names = [n for n in coach_names if n != SEPARATOR_SENTINEL]
+            for idx, name in enumerate(real_names, start=1):
+                override = COACH_STUDENT_START_DATES.get(name)
+                _show_progress(idx, len(real_names), name)
+                res = collect_results(
+                    token,
+                    name,
+                    students[name],
+                    semester_scope,
+                    override_start=override,
+                    include_ungraded=True,
+                )
+                if res == "TOKEN_EXPIRED":
+                    print()
+                    print("Token expired, returning to main menu.")
+                    break
+                all_results.extend(res)
+            else:
+                print()
+                print_coach_table(all_results, all_names=coach_names)
+                maybe_write_schema_report()
+                maybe_write_pending_debug_report()
+
+        else:
+            # Shortcut: allow entering a student number or exact name directly.
+            name = resolve_student_selection(choice, ordered_names, students)
+            if name:
+                status = print_student_evaluations(token, name, students[name], semester_scope, override_start=COACH_STUDENT_START_DATES.get(name))
+                if status == "TOKEN_EXPIRED":
+                    print("Token expired, returning to main menu.")
+                else:
+                    maybe_write_schema_report()
+                    maybe_write_pending_debug_report()
+                continue
+
+            print("Invalid option, returning to main menu.")
+
+        if _cli_mode:
+            break
+
 except KeyboardInterrupt:
     print("\nKeyboard interrupt detected. Exiting gracefully. Goodbye!")
     exit()
