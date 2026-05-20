@@ -82,17 +82,40 @@ python3 portflow_export_full.py --students-source shared
 
 ## CLI Options
 
-- `--all`
-	- Shortcut for `--students all`
-- `--students {coach,all}`
-	- `coach` (default): filter to `CURRENT_COACH_STUDENTS`
-	- `all`: use all students with shared portfolios
+- `--semester {1,2,3}`
+	- `1`: huidig semester (standaard)
+	- `2`: alle semesters
+	- `3`: sep25 t/m jan26
+- `--students {1,2,3}`
+	- `1`: alle studenten via shared collection
+	- `2`: studenten via sectie (coachingsdashboard)
+	- `3`: coach-studenten uit `.env` array
+- `--output {1,2,3}`
+	- `1`: één student weergeven
+	- `2`: alle studenten exporteren naar CSV
+	- `3`: coach-studenten weergeven als tabel
+- `--anoniem`
+	- Vervang alle studentnamen door `*******` in de uitvoer (handig bij screenshares)
 - `--dump-schema`
-	- Write observed API schema paths/types to `schema_inventory.txt`
+	- Schrijf gevonden API-veldpaden/typen naar `schema_inventory.txt`
 - `--debug-api`
-	- Log all API calls and raw response bodies to `api_debug_log.jsonl`
+	- Log alle API-calls en responses naar `api_debug_log.jsonl`
 - `--debug-pending`
-	- Log evaluation include/skip decisions to `pending_debug.json`
+	- Log evaluatie-beslissingen naar `pending_debug.json`
+
+### Snelste gebruik (niet-interactief)
+
+Toon de coachtabel direct zonder tussenvragen:
+
+```bash
+python portflow.py --semester 1 --students 3 --output 3
+```
+
+Met anonieme namen (bijv. tijdens een presentatie):
+
+```bash
+python portflow.py --semester 1 --students 3 --output 3 --anoniem
+```
 
 ## Runtime Flow
 

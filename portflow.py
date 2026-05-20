@@ -1104,7 +1104,7 @@ def print_coach_table(results, all_names=None):
         if student_name not in student_goals:
             continue
         goals = student_goals[student_name]
-        display_name = "*******" if ARGS.anoniem else student_name
+        display_name = "*" * len(student_name) if ARGS.anoniem else student_name
         sem_raw = COACH_STUDENT_SEMESTER.get(student_name, "")
         sem = f"Semester {sem_raw}" if sem_raw else ""
         tribe = COACH_STUDENT_TRIBE.get(student_name, "")
