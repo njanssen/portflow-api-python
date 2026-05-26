@@ -152,6 +152,16 @@ COACH_STUDENT_SEMESTER = {name: sem for name, _, sem, *_ in CURRENT_COACH_STUDEN
 COACH_STUDENT_TRIBE = {name: tribe for name, _, _sem, tribe, *_ in CURRENT_COACH_STUDENTS if tribe}
 COACH_STUDENT_GILDE = {name: gilde for name, _, _sem, _tribe, gilde in CURRENT_COACH_STUDENTS if gilde}
 
+# Tribe-brede lijst (eigen studenten + collega's) uit .env
+CURRENT_TRIBE_STUDENTS = parse_coach_students(
+    os.getenv("PORTFLOW_TRIBE_STUDENTS_JSON", "").strip()
+)
+TRIBE_STUDENT_NAMES = {name for name, *_ in CURRENT_TRIBE_STUDENTS}
+TRIBE_STUDENT_START_DATES = {name: start for name, start, *_ in CURRENT_TRIBE_STUDENTS if start is not None}
+TRIBE_STUDENT_SEMESTER = {name: sem for name, _, sem, *_ in CURRENT_TRIBE_STUDENTS if sem}
+TRIBE_STUDENT_TRIBE = {name: tribe for name, _, _sem, tribe, *_ in CURRENT_TRIBE_STUDENTS if tribe}
+TRIBE_STUDENT_GILDE = {name: gilde for name, _, _sem, _tribe, gilde in CURRENT_TRIBE_STUDENTS if gilde}
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -177,9 +187,9 @@ def parse_args():
     )
     parser.add_argument(
         "--students",
-        choices=["1", "2", "3"],
+        choices=["1", "2", "3", "4"],
         default=None,
-        help="Student ophaal methode: 1=shared collection, 2=section, 3=coach array",
+        help="Student ophaal methode: 1=shared collection, 2=section, 3=coach array, 4=tribe array",
     )
     parser.add_argument(
         "--output",
@@ -848,10 +858,13 @@ def collect_results(
     semester_scope="current",
     override_start=None,
     include_ungraded=False,
+    inaccessible_names=None,
 ):
     results = []
+    any_accessible = False
+    portfolio_ids = list(student_data["portfolio_ids"])
 
-    for portfolio_id in student_data["portfolio_ids"]:
+    for portfolio_id in portfolio_ids:
         goals = get_goals(token, portfolio_id)
         if goals == "TOKEN_EXPIRED":
             return "TOKEN_EXPIRED"
@@ -867,6 +880,7 @@ def collect_results(
                 f"(student_id={student_data.get('student_id')}, portfolio_id={portfolio_id}). Skipping."
             )
             continue
+        any_accessible = True
 
         for goal in goals:
             goal_id = goal["id"]
@@ -906,7 +920,10 @@ def collect_results(
                     observe_schema(evaluation, "portfolios.goals.feedback_items.item.evaluation")
 
                 evaluation_datetime = resolve_evaluation_date(item, evaluation)
-                if not date_in_selected_semester(evaluation_datetime, semester_scope, override_start):
+                # Only filter by date if a date was actually found; items without
+                # a resolvable date are included (we cannot prove they are outside
+                # the semester and dropping them would hide real evaluations).
+                if evaluation_datetime is not None and not date_in_selected_semester(evaluation_datetime, semester_scope, override_start):
                     log_pending_debug_event({
                         "student_name": student_name,
                         "portfolio_id": portfolio_id,
@@ -915,6 +932,11 @@ def collect_results(
                         "role": item.get("role"),
                         "decision": "skip",
                         "reason": "outside_semester",
+                        "detected_date": evaluation_datetime.isoformat() if evaluation_datetime else None,
+                        "item_created_at": item.get("created_at"),
+                        "item_updated_at": item.get("updated_at"),
+                        "eval_created_at": (evaluation or {}).get("created_at"),
+                        "eval_submitted_at": (evaluation or {}).get("submitted_at"),
                         "pending_reason": pending,
                         "review_request_scored": (evaluation or {}).get("review_request_scored"),
                         "level": (evaluation or {}).get("level"),
@@ -1004,7 +1026,12 @@ def collect_results(
                 results.append({
                     "student_name": student_name,
                     "goal_name": goal_name,
-                    "evaluation": evaluation_text
+                    "evaluation": evaluation_text,
+                    "pending_detail": {
+                        "reviewer": reviewer_name,
+                        "date": evaluation_date,
+                        "title": (evaluation or {}).get("review_request_title"),
+                    } if is_pending else None,
                 })
 
                 log_pending_debug_event({
@@ -1022,21 +1049,93 @@ def collect_results(
                     "submitted_at": (evaluation or {}).get("submitted_at"),
                 })
 
+            # Detect pending coach evaluations that are not yet visible in the
+            # API because the assigned coach hasn't responded yet (e.g., review
+            # requests sent to a different coach).  When a self-evaluation for a
+            # review_request_id is within the current semester but no coach
+            # feedback item exists for that same review_request_id, add a
+            # synthetic '?' so the pending state is visible in the table.
+            if include_ungraded:
+                self_by_rid: dict = {}    # rid -> (item, evaluation)
+                reviewer_rids: set = set()  # rids with any coach/assessor response
+
+                for _item in feedback_items:
+                    if _item.get("type") != "criterion_evaluation":
+                        continue
+                    _ev = _item.get("evaluation") or {}
+                    _rid = _ev.get("review_request_id")
+                    if not _rid:
+                        continue
+                    _role = _item.get("role")
+                    if _role in ("coach", "assessor"):
+                        reviewer_rids.add(_rid)
+                    elif _role == "self":
+                        _dt = resolve_evaluation_date(_item, _ev)
+                        _in = _dt is None or date_in_selected_semester(_dt, semester_scope, override_start)
+                        if _in:
+                            self_by_rid.setdefault(_rid, (_item, _ev))
+
+                for _rid, (_sitem, _sev) in self_by_rid.items():
+                    if _rid in reviewer_rids:
+                        continue
+                    _self_dt = resolve_evaluation_date(_sitem, _sev)
+                    results.append({
+                        "student_name": student_name,
+                        "goal_name": goal_name,
+                        "evaluation": "?",
+                        "pending_detail": {
+                            "reviewer": None,
+                            "date": format_short_date(_self_dt),
+                            "title": _sev.get("review_request_title"),
+                        },
+                    })
+                    log_pending_debug_event({
+                        "student_name": student_name,
+                        "portfolio_id": portfolio_id,
+                        "goal_id": goal_id,
+                        "goal_name": goal_name,
+                        "role": "coach",
+                        "decision": "include",
+                        "rendered": "?",
+                        "reason": "coach_pending_inferred",
+                        "review_request_id": _rid,
+                        "review_request_title": _sev.get("review_request_title"),
+                        "self_submitted_at": _sev.get("submitted_at"),
+                    })
+
+    if portfolio_ids and not any_accessible and inaccessible_names is not None:
+        inaccessible_names.add(student_name)
+
     return results
 
 
 def print_student_evaluations(token, student_name, student_data, semester_scope="current", override_start=None):
-    results = collect_results(token, student_name, student_data, semester_scope, override_start=override_start)
+    results = collect_results(token, student_name, student_data, semester_scope, override_start=override_start, include_ungraded=True)
     if results == "TOKEN_EXPIRED":
         return "TOKEN_EXPIRED"
 
     print(f"\n{student_name}")
-    goals = {}
+    goals: dict = {}
     for r in results:
-        goals.setdefault(r["goal_name"], []).append(r["evaluation"])
+        goals.setdefault(r["goal_name"], []).append(r)
 
-    for goal, evals in goals.items():
-        print(f"{goal}: {', '.join(evals)}")
+    for goal, result_list in goals.items():
+        parts = []
+        for r in result_list:
+            ev = r["evaluation"]
+            pd = r.get("pending_detail")
+            if ev == "?" and pd:
+                reviewer = pd.get("reviewer")
+                date = pd.get("date")
+                title = pd.get("title")
+                if reviewer and date:
+                    ev = f"? (Ingediend bij: {reviewer}, {date})"
+                elif date and title:
+                    ev = f"? (Ingediend: {date} — {title})"
+                elif date:
+                    ev = f"? (Ingediend: {date})"
+            parts.append(ev)
+        print(f"{goal}: {', '.join(parts)}")
 
     return "OK"
 
@@ -1051,10 +1150,14 @@ def extract_level_short(evaluation_text: str) -> str:
     return evaluation_text
 
 
-def print_coach_table(results, all_names=None):
+def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=None, tribe_map=None, gilde_map=None):
     if not results and not all_names:
         print("No data to display.")
         return
+
+    _sem_map = sem_map if sem_map is not None else COACH_STUDENT_SEMESTER
+    _tribe_map = tribe_map if tribe_map is not None else COACH_STUDENT_TRIBE
+    _gilde_map = gilde_map if gilde_map is not None else COACH_STUDENT_GILDE
 
     # Build student -> goal -> list of short levels
     student_goals = {}
@@ -1080,9 +1183,9 @@ def print_coach_table(results, all_names=None):
         col_widths.append(width)
 
     name_width = max(len("Naam"), max(len(s) for s in student_goals))
-    sem_width = max(len("Semester"), max((len(f"Semester {COACH_STUDENT_SEMESTER.get(s, '')}".strip() if COACH_STUDENT_SEMESTER.get(s) else "") for s in student_goals), default=0))
-    tribe_width = max(len("Tribe"), max((len(COACH_STUDENT_TRIBE.get(s, "")) for s in student_goals), default=0))
-    gilde_width = max(len("Gilde"), max((len(COACH_STUDENT_GILDE.get(s, "")) for s in student_goals), default=0))
+    sem_width = max(len("Semester"), max((len(f"Semester {_sem_map.get(s, '')}".strip() if _sem_map.get(s) else "") for s in student_goals), default=0))
+    tribe_width = max(len("Tribe"), max((len(_tribe_map.get(s, "")) for s in student_goals), default=0))
+    gilde_width = max(len("Gilde"), max((len(_gilde_map.get(s, "")) for s in student_goals), default=0))
 
     # Header
     header = f"{'Naam':<{name_width}}"
@@ -1105,10 +1208,22 @@ def print_coach_table(results, all_names=None):
             continue
         goals = student_goals[student_name]
         display_name = "*" * len(student_name) if ARGS.anoniem else student_name
-        sem_raw = COACH_STUDENT_SEMESTER.get(student_name, "")
+        sem_raw = _sem_map.get(student_name, "")
         sem = f"Semester {sem_raw}" if sem_raw else ""
-        tribe = COACH_STUDENT_TRIBE.get(student_name, "")
-        gilde = COACH_STUDENT_GILDE.get(student_name, "")
+        tribe = _tribe_map.get(student_name, "")
+        gilde = _gilde_map.get(student_name, "")
+
+        # Inaccessible student: portfolio niet zichtbaar voor deze coach
+        if inaccessible_names and student_name in inaccessible_names:
+            row = f"\033[2m{display_name:<{name_width}}\033[0m"
+            for (_, __), w in zip(GOAL_COLUMNS, col_widths):
+                row += f" | \033[2m{'n/b':<{w}}\033[0m" if w >= 3 else f" | \033[2m{'-':<{w}}\033[0m"
+            row += f" | \033[2m{tribe:<{tribe_width}}\033[0m"
+            row += f" | \033[2m{sem:<{sem_width}}\033[0m"
+            row += f" | \033[2m{gilde:<{gilde_width}}\033[0m"
+            print(row)
+            continue
+
         _alert_goals = {"Overzicht creëren", "Kritisch oordelen", "Juiste kennis ontwikkelen", "Kwalitatief Product Maken"}
         _alert = all(not goals.get(fn) for fn, _ in GOAL_COLUMNS if fn in _alert_goals)
         _soft_goals = {"Plannen", "Boodschap Delen", "Samenwerken", "Flexibel opstellen", "Pro-actief handelen", "Reflecteren"}
@@ -1131,6 +1246,8 @@ def print_coach_table(results, all_names=None):
         row += f" | {gilde:<{gilde_width}}"
         print(row)
 
+    if inaccessible_names and any(n in inaccessible_names for n in (all_names or []) if n != SEPARATOR_SENTINEL):
+        print("  \033[2mn/b = portfolio niet zichtbaar (geen toegang)\033[0m")
     print()
 
 
@@ -1183,12 +1300,14 @@ try:
         token = get_bearer_token()
 
         while True:
+            fetch_mode = None
             if not _cli_mode:
                 print("\nChoose student fetching method:")
                 print("1) All students with shared collection")
                 print("2) Students from section (coachingsdashboard)")
                 print("3) Huidige coach studenten volgens array")
-            fetch_choice = (ARGS.students or input("Enter 1, 2 or 3 (or 'q' to quit): ").strip())
+                print("4) Tribe studenten (coach + collega's) volgens array")
+            fetch_choice = (ARGS.students or input("Enter 1, 2, 3 or 4 (or 'q' to quit): ").strip())
 
             if fetch_choice.lower() == "q":
                 print("Exiting gracefully. Goodbye!")
@@ -1201,6 +1320,7 @@ try:
                     token = get_bearer_token(force_prompt=True)
                     continue
                 students = extract_students(shared_items)
+                fetch_mode = "1"
                 break
 
             elif fetch_choice == "2":
@@ -1210,6 +1330,7 @@ try:
                     print("Token expired, please enter a new one.")
                     token = get_bearer_token(force_prompt=True)
                     continue
+                fetch_mode = "2"
                 break
 
             elif fetch_choice == "3":
@@ -1232,6 +1353,24 @@ try:
                     print("These coach students were not found in shared collections:")
                     for missing_name in missing_names:
                         print(f"  - {missing_name}")
+                fetch_mode = "3"
+                break
+
+            elif fetch_choice == "4":
+                shared_items = get_shared_collections(token)
+                if shared_items == "TOKEN_EXPIRED":
+                    print("Token expired, please enter a new one.")
+                    token = get_bearer_token(force_prompt=True)
+                    continue
+                all_students = extract_students(shared_items)
+                students = {
+                    name: data
+                    for name, data in all_students.items()
+                    if name in TRIBE_STUDENT_NAMES
+                }
+                # Students in the tribe list but not in shared collections are marked
+                # inaccessible later in output option 3; no warning needed here.
+                fetch_mode = "4"
                 break
 
             else:
@@ -1241,7 +1380,9 @@ try:
             print("No students found.")
             continue
 
-        env_order = [name for name, *_ in CURRENT_COACH_STUDENTS]
+        env_order = [
+            name for name, *_ in (CURRENT_TRIBE_STUDENTS if fetch_mode == "4" else CURRENT_COACH_STUDENTS)
+        ]
         ordered_names, number_width = student_order_and_width(students, preferred_order=env_order)
 
         if not _cli_mode:
@@ -1252,7 +1393,7 @@ try:
             print("\nChoose output option:")
             print("1) Single student")
             print("2) All students (export to CSV)")
-            print("3) Studenten in array weergeven als tabel")
+            print("3) Weergeven als tabel")
             print("99) Enter student name or id")
 
         choice = (ARGS.output or input(
@@ -1312,37 +1453,71 @@ try:
                 maybe_write_pending_debug_report()
 
         elif choice == "3":
-            coach_names = [
-                name for name, *_ in CURRENT_COACH_STUDENTS
-                if name == SEPARATOR_SENTINEL or name in students
-            ]
-            if not coach_names:
-                print("No coach students found in current student list.")
-                continue
-
-            all_results = []
-            real_names = [n for n in coach_names if n != SEPARATOR_SENTINEL]
-            for idx, name in enumerate(real_names, start=1):
-                override = COACH_STUDENT_START_DATES.get(name)
-                _show_progress(idx, len(real_names), name)
-                res = collect_results(
-                    token,
-                    name,
-                    students[name],
-                    semester_scope,
-                    override_start=override,
-                    include_ungraded=True,
-                )
-                if res == "TOKEN_EXPIRED":
+            if fetch_mode == "4":
+                # Tribe tabel: inclusief inaccessible studenten van collega's
+                tribe_names_list = [name for name, *_ in CURRENT_TRIBE_STUDENTS]
+                real_tribe_names = [n for n in tribe_names_list if n != SEPARATOR_SENTINEL]
+                if not real_tribe_names:
+                    print("Geen tribe studenten geconfigureerd (PORTFLOW_TRIBE_STUDENTS_JSON).")
+                    continue
+                inaccessible = set()
+                all_results = []
+                for idx, name in enumerate(real_tribe_names, start=1):
+                    _show_progress(idx, len(real_tribe_names), name)
+                    if name not in students:
+                        inaccessible.add(name)
+                        continue
+                    override = TRIBE_STUDENT_START_DATES.get(name)
+                    res = collect_results(
+                        token, name, students[name], semester_scope,
+                        override_start=override, include_ungraded=True,
+                        inaccessible_names=inaccessible,
+                    )
+                    if res == "TOKEN_EXPIRED":
+                        print()
+                        print("Token expired, returning to main menu.")
+                        break
+                    all_results.extend(res)
+                else:
                     print()
-                    print("Token expired, returning to main menu.")
-                    break
-                all_results.extend(res)
+                    print_coach_table(
+                        all_results,
+                        all_names=tribe_names_list,
+                        inaccessible_names=inaccessible,
+                        sem_map=TRIBE_STUDENT_SEMESTER,
+                        tribe_map=TRIBE_STUDENT_TRIBE,
+                        gilde_map=TRIBE_STUDENT_GILDE,
+                    )
+                    maybe_write_schema_report()
+                    maybe_write_pending_debug_report()
             else:
-                print()
-                print_coach_table(all_results, all_names=coach_names)
-                maybe_write_schema_report()
-                maybe_write_pending_debug_report()
+                # Coach tabel (fetch methode 1/2/3)
+                coach_names = [
+                    name for name, *_ in CURRENT_COACH_STUDENTS
+                    if name == SEPARATOR_SENTINEL or name in students
+                ]
+                if not coach_names:
+                    print("No coach students found in current student list.")
+                    continue
+                all_results = []
+                real_names = [n for n in coach_names if n != SEPARATOR_SENTINEL]
+                for idx, name in enumerate(real_names, start=1):
+                    override = COACH_STUDENT_START_DATES.get(name)
+                    _show_progress(idx, len(real_names), name)
+                    res = collect_results(
+                        token, name, students[name], semester_scope,
+                        override_start=override, include_ungraded=True,
+                    )
+                    if res == "TOKEN_EXPIRED":
+                        print()
+                        print("Token expired, returning to main menu.")
+                        break
+                    all_results.extend(res)
+                else:
+                    print()
+                    print_coach_table(all_results, all_names=coach_names)
+                    maybe_write_schema_report()
+                    maybe_write_pending_debug_report()
 
         else:
             # Shortcut: allow entering a student number or exact name directly.
@@ -1358,8 +1533,7 @@ try:
 
             print("Invalid option, returning to main menu.")
 
-        if _cli_mode:
-            break
+        break
 
 except KeyboardInterrupt:
     print("\nKeyboard interrupt detected. Exiting gracefully. Goodbye!")
