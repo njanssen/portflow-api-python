@@ -27,73 +27,107 @@ pip install requests
 
 ## Configuration
 
-Main settings are at the top of `portflow.py`:
+All settings are read from a `.env` file in the project root. Copy `.env.example` to `.env` and fill in the values.
 
-- `BASE_URL`
-- `SECTION_ID`
-- `CURRENT_SEMESTER_START`
-- `CURRENT_SEMESTER_END`
-- `CURRENT_COACH_STUDENTS`
-- `BEARER_TOKEN`
+### `.env` variables
 
-Notes:
+| Variable | Verplicht | Beschrijving |
+|---|---|---|
+| `PORTFLOW_BEARER_TOKEN` | ja | JWT bearer token voor de Portflow API. Zie [Capture bearer token](#capture-bearer-token). Als leeg, vraagt het script om invoer bij elke run. |
+| `PORTFLOW_COACH_STUDENTS_JSON` | nee | JSON-array met eigen coachstudenten. Zie [Student JSON formaat](#student-json-formaat). Wordt gebruikt bij `--students 3`. Als leeg, valt het script terug op alle zichtbare portfolios. |
+| `PORTFLOW_TRIBE_STUDENTS_JSON` | nee | JSON-array met alle studenten in je tribe (eigen studenten + collega's). Zelfde formaat als `PORTFLOW_COACH_STUDENTS_JSON`. Wordt gebruikt bij `--students 4`. |
+| `PORTFLOW_SEMESTER_START` | nee | Startdatum van het huidige semester in `YYYY-MM-DD` formaat (bijv. `2026-02-12`). Overschrijft de standaardwaarde in de code. Gebruikt door `portflow_export_full.py`. |
+| `PORTFLOW_SEMESTER_END` | nee | Einddatum van het huidige semester in `YYYY-MM-DD` formaat (bijv. `2026-06-30`). Overschrijft de standaardwaarde in de code. Gebruikt door `portflow_export_full.py`. |
 
-- If `BEARER_TOKEN` is empty, the script prompts for one.
-- `CURRENT_COACH_STUDENTS` is the default student subset.
-- If `CURRENT_COACH_STUDENTS` is empty, the script automatically falls back to all visible shared portfolios.
+### Student JSON formaat
+
+`PORTFLOW_COACH_STUDENTS_JSON` en `PORTFLOW_TRIBE_STUDENTS_JSON` zijn JSON-arrays van studentobjecten:
+
+```json
+PORTFLOW_COACH_STUDENTS_JSON=[
+    {"name": "Voornaam Achternaam", "start_date": "2026-02-12", "semester": "4", "tribe": "Tribe Naam", "gilde": "BE"},
+    {"name": "Andere Student",      "start_date": null,         "semester": "3", "tribe": "Tribe Naam", "gilde": "FE"},
+    {"separator": true},
+    {"name": "Student Andere Tribe","start_date": null,         "semester": "3", "tribe": "Tribe B",    "gilde": "AI"}
+]
+```
+
+Velden per student:
+
+| Veld | Type | Beschrijving |
+|---|---|---|
+| `name` | string | Volledige naam zoals in Portflow (hoofdlettergevoelig). |
+| `start_date` | `"YYYY-MM-DD"` of `null` | Semesterstartdatum van deze student. Overschrijft de globale semesterstart voor filterdoeleinden. Gebruik `null` als de student de globale datum volgt. |
+| `semester` | string | Semesternummer voor weergave in de tabel (bijv. `"3"` of `"4"`). Puur informatief. |
+| `tribe` | string | Tribenaam voor weergave in de tabel. Puur informatief. |
+| `gilde` | string | Gildenaam voor weergave in de tabel (bijv. `"BE"`, `"FE"`, `"AI"`, `"UX"`). Puur informatief. |
+| `separator` | `true` | Speciaal object; voegt een horizontale scheidingslijn in de tabel in. Geen andere velden nodig. |
 
 ## Run
 
-Default run:
+Standaard run (interactief):
 
 ```bash
 python3 portflow.py
 ```
 
-Show all students you can see (not only `CURRENT_COACH_STUDENTS`):
+Toon alle zichtbare studenten (niet alleen `PORTFLOW_COACH_STUDENTS_JSON`):
 
 ```bash
-python3 portflow.py --all
+python3 portflow.py --students 1
 ```
 
-Equivalent explicit mode:
+Toon de coachtabel direct zonder tussenvragen:
 
 ```bash
-python3 portflow.py --students all
+python3 portflow.py --semester 1 --students 3 --output 3
 ```
 
-Full collection export for one selected student:
+Toon tribe-tabel:
+
+```bash
+python3 portflow.py --semester 1 --students 4 --output 3
+```
+
+Met anonieme namen (bijv. tijdens een presentatie):
+
+```bash
+python3 portflow.py --semester 1 --students 3 --output 3 --anoniem
+```
+
+Full collection export voor één student:
 
 ```bash
 python3 portflow_export_full.py
 ```
 
-Optional arguments:
+Met opties:
 
 ```bash
 python3 portflow_export_full.py --students-source section --section-id 72086 --output-dir ./exports
 ```
 
-Or fetch students from shared collections:
+Studenten ophalen via shared collections:
 
 ```bash
 python3 portflow_export_full.py --students-source shared
 ```
 
-## CLI Options
+## CLI Options (`portflow.py`)
 
 - `--semester {1,2,3}`
 	- `1`: huidig semester (standaard)
 	- `2`: alle semesters
 	- `3`: sep25 t/m jan26
-- `--students {1,2,3}`
+- `--students {1,2,3,4}`
 	- `1`: alle studenten via shared collection
 	- `2`: studenten via sectie (coachingsdashboard)
-	- `3`: coach-studenten uit `.env` array
+	- `3`: coach-studenten uit `PORTFLOW_COACH_STUDENTS_JSON` in `.env`
+	- `4`: tribe-studenten uit `PORTFLOW_TRIBE_STUDENTS_JSON` in `.env`
 - `--output {1,2,3}`
 	- `1`: één student weergeven
 	- `2`: alle studenten exporteren naar CSV
-	- `3`: coach-studenten weergeven als tabel
+	- `3`: studenten weergeven als tabel
 - `--anoniem`
 	- Vervang alle studentnamen door `*******` in de uitvoer (handig bij screenshares)
 - `--dump-schema`
@@ -103,46 +137,61 @@ python3 portflow_export_full.py --students-source shared
 - `--debug-pending`
 	- Log evaluatie-beslissingen naar `pending_debug.json`
 
-### Snelste gebruik (niet-interactief)
+## CLI Options (`portflow_export_full.py`)
 
-Toon de coachtabel direct zonder tussenvragen:
-
-```bash
-python portflow.py --semester 1 --students 3 --output 3
-```
-
-Met anonieme namen (bijv. tijdens een presentatie):
-
-```bash
-python portflow.py --semester 1 --students 3 --output 3 --anoniem
-```
+- `--output-dir <pad>`
+	- Basismap voor de export (standaard: huidige map `./`)
+- `--token <token>`
+	- Bearer token als CLI-argument (optioneel; anders via `PORTFLOW_BEARER_TOKEN` in `.env` of prompt)
+- `--section-id <id>`
+	- Section-id voor het ophalen van de studentenlijst via het coachingsdashboard (optioneel; overschrijft de standaard in de code)
+- `--students-source {section,shared}`
+	- `section` (standaard): haal studentenlijst op via sectie/coachingsdashboard
+	- `shared`: haal studentenlijst op via gedeelde collecties
 
 ## Runtime Flow
 
-On start, the script:
+Bij het starten van `portflow.py`:
 
-1. Prints current semester range from `CURRENT_SEMESTER_START` and `CURRENT_SEMESTER_END`
-2. Fetches students (coach subset by default, or all with `--all`)
-3. Shows students list
-4. Asks output method:
-	 - `1` Single student
-	 - `2` All students (export CSV)
-	 - `3` Students in table
-5. Shows output once and exits
+1. Toont het huidige semesterbereik (uit `PORTFLOW_SEMESTER_START` / `PORTFLOW_SEMESTER_END` of de standaardwaarden in de code).
+2. Haalt de studentenlijst op (coach-subset standaard, of een andere bron via `--students`).
+3. Toont de studentenlijst.
+4. Vraagt om de gewenste uitvoermethode (tenzij `--output` is meegegeven):
+	- `1` Één student weergeven
+	- `2` Alle studenten exporteren naar CSV
+	- `3` Studenten weergeven als tabel
+5. Toont de uitvoer en sluit af.
 
 ## Capture bearer token
 
-To be able to use the python script, you'll need to capture a bearer token.
+Om de scripts te kunnen gebruiken heb je een bearer token nodig van de Portflow API. Het token is een JWT dat je uit de browser haalt nadat je bent ingelogd.
 
-1. Log in to [portflow](https://canvas.hu.nl/courses/51659/external_tools/1134), using HU account
-2. Open "inspector" in browser
-3. Open "network" tab
-4. Filter on "dashboard"
-5. Reload (F5) the page
-6. <copy><paste> the bearer token
+### Stap 1 – Token ophalen uit de browser
 
-Screenshot shows how to capture a bearer token using Safari browser and "inspector" (the bearer token in the screenshot is invalid)
+1. Log in op [Portflow via Canvas](https://canvas.hu.nl/courses/51659/external_tools/1134) met je HU-account.
+2. Open de **Inspector** in je browser (rechtermuisknop → Inspecteren, of `F12` / `Cmd+Option+I`).
+3. Ga naar het tabblad **Network** (Netwerk).
+4. Filter op `dashboard` in de zoekbalk.
+5. Herlaad de pagina (`F5` / `Cmd+R`).
+6. Klik op het eerste `dashboard`-verzoek in de lijst.
+7. Open de tab **Headers** en zoek naar `Authorization:`.
+8. Kopieer de waarde achter `Bearer ` (het token zelf, zonder het woord "Bearer").
+
+De screenshot hieronder toont hoe je het token ophaalt in Safari (het token in de screenshot is ongeldig):
+
 ![Screenshot](docs/images/portflow-dashboard-redacted.png)
+
+### Stap 2 – Token opslaan in `.env`
+
+Plak het gekopieerde token in je `.env` bestand:
+
+```env
+PORTFLOW_BEARER_TOKEN=eyJraWQiOi...
+```
+
+Het token verloopt na ongeveer 2 uur. Haal dan een nieuw token op via bovenstaande stappen.
+
+Als `PORTFLOW_BEARER_TOKEN` leeg is of ontbreekt, vragen de scripts bij elke run om een token via de terminal. Je kunt het token ook meegeven als CLI-argument bij `portflow_export_full.py` via `--token <token>`.
 
 ## Output Behavior
 
