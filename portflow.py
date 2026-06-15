@@ -71,7 +71,7 @@ def parse_coach_students(raw_json: str):
 
         # Separator entry: {"separator": true}
         if entry.get("separator") is True:
-            students.append((SEPARATOR_SENTINEL, None, "", "", ""))
+            students.append((SEPARATOR_SENTINEL, None, "", "", "", ""))
             continue
 
         name = str(entry.get("name") or "").strip()
@@ -96,8 +96,9 @@ def parse_coach_students(raw_json: str):
         semester = str(entry.get("semester") or "").strip()
         tribe = str(entry.get("tribe") or "").strip()
         gilde = str(entry.get("gilde") or "").strip()
+        coach = str(entry.get("coach") or "").strip()
 
-        students.append((name, start_date, semester, tribe, gilde))
+        students.append((name, start_date, semester, tribe, gilde, coach))
 
     return students
 
@@ -109,6 +110,29 @@ print(r" |  __/ (_) | |  | |_|  _| | (_) \ V  V /  ")
 print(r" |_|   \___/|_|   \__|_| |_|\___/ \_/\_/   ")
 print(r"      dashboard  —  peter.snoek@hu.nl      ")
 print()
+
+# Controleer vereiste packages
+_REQUIRED_PACKAGES = [
+    ("requests",  "requests",  "pip install requests"),
+    ("openpyxl",  "openpyxl",  "pip install openpyxl"),
+]
+_missing = []
+for _pkg_import, _pkg_name, _pkg_install in _REQUIRED_PACKAGES:
+    try:
+        __import__(_pkg_import)
+    except ImportError:
+        _missing.append((_pkg_name, _pkg_install))
+if _missing:
+    print("Ontbrekende packages gevonden. Installeer ze met:")
+    for _name, _cmd in _missing:
+        print(f"  {_cmd}    # {_name}")
+    print()
+    if any(n == "requests" for n, _ in _missing):
+        print("Het script kan niet verder zonder 'requests'. Gestopt.")
+        sys.exit(1)
+    else:
+        print("Tip: zonder 'openpyxl' is het inlezen van Excel-bestanden niet beschikbaar.")
+        print()
 
 load_env_file()
 
@@ -197,31 +221,34 @@ CURRENT_COACH_STUDENTS = parse_coach_students(
 )
 
 # Afgeleide lookups voor snel gebruik
-COACH_STUDENT_NAMES = {name for name, *_ in CURRENT_COACH_STUDENTS}
+COACH_STUDENT_NAMES       = {name for name, *_ in CURRENT_COACH_STUDENTS}
 COACH_STUDENT_START_DATES = {name: start for name, start, *_ in CURRENT_COACH_STUDENTS if start is not None}
-COACH_STUDENT_SEMESTER = {name: sem for name, _, sem, *_ in CURRENT_COACH_STUDENTS if sem}
-COACH_STUDENT_TRIBE = {name: tribe for name, _, _sem, tribe, *_ in CURRENT_COACH_STUDENTS if tribe}
-COACH_STUDENT_GILDE = {name: gilde for name, _, _sem, _tribe, gilde in CURRENT_COACH_STUDENTS if gilde}
+COACH_STUDENT_SEMESTER    = {name: sem   for name, _, sem, *_      in CURRENT_COACH_STUDENTS if sem}
+COACH_STUDENT_TRIBE       = {name: tribe for name, _, _, tribe, *_ in CURRENT_COACH_STUDENTS if tribe}
+COACH_STUDENT_GILDE       = {name: gilde for name, _, _, _, gilde, *_ in CURRENT_COACH_STUDENTS if gilde}
+COACH_STUDENT_COACH       = {name: coach for name, _, _, _, _, coach   in CURRENT_COACH_STUDENTS if coach}
 
 # Tribe-brede lijst (eigen studenten + collega's) uit .env
 CURRENT_TRIBE_STUDENTS = parse_coach_students(
     os.getenv("PORTFLOW_TRIBE_STUDENTS_JSON", "").strip()
 )
-TRIBE_STUDENT_NAMES = {name for name, *_ in CURRENT_TRIBE_STUDENTS}
+TRIBE_STUDENT_NAMES       = {name for name, *_ in CURRENT_TRIBE_STUDENTS}
 TRIBE_STUDENT_START_DATES = {name: start for name, start, *_ in CURRENT_TRIBE_STUDENTS if start is not None}
-TRIBE_STUDENT_SEMESTER = {name: sem for name, _, sem, *_ in CURRENT_TRIBE_STUDENTS if sem}
-TRIBE_STUDENT_TRIBE = {name: tribe for name, _, _sem, tribe, *_ in CURRENT_TRIBE_STUDENTS if tribe}
-TRIBE_STUDENT_GILDE = {name: gilde for name, _, _sem, _tribe, gilde in CURRENT_TRIBE_STUDENTS if gilde}
+TRIBE_STUDENT_SEMESTER    = {name: sem   for name, _, sem, *_   in CURRENT_TRIBE_STUDENTS if sem}
+TRIBE_STUDENT_TRIBE       = {name: tribe for name, _, _, tribe, *_ in CURRENT_TRIBE_STUDENTS if tribe}
+TRIBE_STUDENT_GILDE       = {name: gilde for name, _, _, _, gilde, *_ in CURRENT_TRIBE_STUDENTS if gilde}
+TRIBE_STUDENT_COACH       = {name: coach for name, _, _, _, _, coach  in CURRENT_TRIBE_STUDENTS if coach}
 
 # Gilde-brede lijst uit .env
 CURRENT_GILDE_STUDENTS = parse_coach_students(
     os.getenv("PORTFLOW_GILDE_STUDENTS_JSON", "").strip()
 )
-GILDE_STUDENT_NAMES = {name for name, *_ in CURRENT_GILDE_STUDENTS}
+GILDE_STUDENT_NAMES       = {name for name, *_ in CURRENT_GILDE_STUDENTS}
 GILDE_STUDENT_START_DATES = {name: start for name, start, *_ in CURRENT_GILDE_STUDENTS if start is not None}
-GILDE_STUDENT_SEMESTER = {name: sem for name, _, sem, *_ in CURRENT_GILDE_STUDENTS if sem}
-GILDE_STUDENT_TRIBE = {name: tribe for name, _, _sem, tribe, *_ in CURRENT_GILDE_STUDENTS if tribe}
-GILDE_STUDENT_GILDE = {name: gilde for name, _, _sem, _tribe, gilde in CURRENT_GILDE_STUDENTS if gilde}
+GILDE_STUDENT_SEMESTER    = {name: sem   for name, _, sem, *_   in CURRENT_GILDE_STUDENTS if sem}
+GILDE_STUDENT_TRIBE       = {name: tribe for name, _, _, tribe, *_ in CURRENT_GILDE_STUDENTS if tribe}
+GILDE_STUDENT_GILDE       = {name: gilde for name, _, _, _, gilde, *_ in CURRENT_GILDE_STUDENTS if gilde}
+GILDE_STUDENT_COACH       = {name: coach for name, _, _, _, _, coach  in CURRENT_GILDE_STUDENTS if coach}
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -262,6 +289,17 @@ def parse_args():
         choices=["alles", "coach", "tribe", "gilde"],
         default=None,
         help="Welke studentenlijst: alles=gedeeld, coach=mijn coach studenten, tribe=tribe, gilde=gilde",
+    )
+    parser.add_argument(
+        "--student",
+        default=None,
+        metavar="NUMMER",
+        help="Kies direct de Nde student uit de lijst (volgnummer, alleen bij --aantal 1)",
+    )
+    parser.add_argument(
+        "--admin",
+        action="store_true",
+        help="Toon beheeropties (Excel-import, studenten toevoegen aan .env)",
     )
     return parser.parse_args()
 
@@ -521,6 +559,12 @@ def get_section_id(force_prompt: bool = False) -> str:
     return input("Enter section_id: ").strip()
 
 
+def anonymize_name(full_name: str) -> str:
+    if not isinstance(full_name, str) or not full_name.strip():
+        return full_name
+    return " ".join(p[0] + "*" * (len(p) - 1) for p in full_name.split())
+
+
 def name_to_initials(full_name: str) -> str:
     if not isinstance(full_name, str):
         return ""
@@ -569,6 +613,752 @@ def resolve_student_selection(selection: str, ordered_names: list[str], students
 
 def choose_semester_scope() -> str:
     return "current"
+
+
+# ------------------------
+# Excel import helpers
+# ------------------------
+
+def _find_excel_with_student_columns() -> "list[tuple[Path, str]]":
+    """Geeft alle .xlsx-bestanden in de scriptmap die de vereiste kolomkoppen bevatten."""
+    required = {"Nummer", "Naam", "Email", "Semester", "Project", "Coach", "Gilde voorkeur"}
+    script_dir = Path(__file__).resolve().parent
+    matches = []
+    for path in sorted(script_dir.glob("*.xlsx")):
+        try:
+            import openpyxl as _xl
+            wb = _xl.load_workbook(path, data_only=True, read_only=True)
+            ws = wb.active
+            headers = {c.value for c in next(ws.iter_rows(min_row=1, max_row=1)) if c.value}
+            wb.close()
+            if required.issubset(headers):
+                matches.append((path, path.name))
+        except Exception:
+            continue
+    return matches
+
+
+def _extract_semester_number(sem_str: str) -> str:
+    m = re.search(r"\d+", str(sem_str or ""))
+    return m.group(0) if m else ""
+
+
+def _extract_tribe_from_project(project_str: str) -> str:
+    """Geeft projectnummer + opdrachtgever terug, bijv. '(08) Commerciele economie'."""
+    s = re.sub(r"\s*\([^)]*\)\s*$", "", str(project_str or "")).strip()
+    dash = s.find(" - ")
+    return s[:dash].strip() if dash != -1 else s
+
+
+def _group_by_tribe(entries: list) -> list:
+    """Sorteert entries op tribe (dan naam) en voegt separators in tussen tribes."""
+    sorted_entries = sorted(entries, key=lambda e: (e.get("tribe") or "", e.get("name") or ""))
+    result = []
+    prev_tribe = None
+    for e in sorted_entries:
+        tribe = e.get("tribe") or ""
+        if prev_tribe is not None and tribe != prev_tribe:
+            result.append({"separator": True})
+        result.append(e)
+        prev_tribe = tribe
+    return result
+
+
+def _write_env_key(key: str, value: str) -> None:
+    """Vervangt of voegt een (mogelijk meerregelige) sleutel toe in .env."""
+    env_path = Path(__file__).resolve().parent / ".env"
+    new_entry = f"{key}={value}\n"
+    if not env_path.exists():
+        env_path.write_text(new_entry, encoding="utf-8")
+        return
+    content = env_path.read_text(encoding="utf-8")
+    m = re.search(rf"^{re.escape(key)}=", content, flags=re.MULTILINE)
+    if m is None:
+        content = content.rstrip("\n") + "\n" + new_entry
+    else:
+        search_from = m.end()
+        nxt = re.search(r"\n[A-Z][A-Z0-9_]+=", content[search_from:])
+        end = search_from + nxt.start() + 1 if nxt else len(content)
+        content = content[: m.start()] + new_entry + content[end:]
+    env_path.write_text(content, encoding="utf-8")
+
+
+def _reload_coach_students() -> None:
+    """Herlaadt PORTFLOW_COACH_STUDENTS_JSON vanuit os.environ in de globale lookups."""
+    global CURRENT_COACH_STUDENTS, COACH_STUDENT_NAMES, COACH_STUDENT_START_DATES
+    global COACH_STUDENT_SEMESTER, COACH_STUDENT_TRIBE, COACH_STUDENT_GILDE, COACH_STUDENT_COACH
+    CURRENT_COACH_STUDENTS = parse_coach_students(
+        os.getenv("PORTFLOW_COACH_STUDENTS_JSON", "").strip()
+    )
+    COACH_STUDENT_NAMES = {name for name, *_ in CURRENT_COACH_STUDENTS}
+    COACH_STUDENT_START_DATES = {
+        name: start for name, start, *_ in CURRENT_COACH_STUDENTS if start is not None
+    }
+    COACH_STUDENT_SEMESTER = {name: sem   for name, _, sem, *_      in CURRENT_COACH_STUDENTS if sem}
+    COACH_STUDENT_TRIBE    = {name: tribe for name, _, _, tribe, *_ in CURRENT_COACH_STUDENTS if tribe}
+    COACH_STUDENT_GILDE    = {name: gilde for name, _, _, _, gilde, *_ in CURRENT_COACH_STUDENTS if gilde}
+    COACH_STUDENT_COACH    = {name: coach for name, _, _, _, _, coach   in CURRENT_COACH_STUDENTS if coach}
+
+
+def _reload_tribe_students() -> None:
+    """Herlaadt PORTFLOW_TRIBE_STUDENTS_JSON vanuit os.environ in de globale lookups."""
+    global CURRENT_TRIBE_STUDENTS, TRIBE_STUDENT_NAMES, TRIBE_STUDENT_START_DATES
+    global TRIBE_STUDENT_SEMESTER, TRIBE_STUDENT_TRIBE, TRIBE_STUDENT_GILDE, TRIBE_STUDENT_COACH
+    CURRENT_TRIBE_STUDENTS = parse_coach_students(
+        os.getenv("PORTFLOW_TRIBE_STUDENTS_JSON", "").strip()
+    )
+    TRIBE_STUDENT_NAMES       = {name for name, *_ in CURRENT_TRIBE_STUDENTS}
+    TRIBE_STUDENT_START_DATES = {name: start for name, start, *_ in CURRENT_TRIBE_STUDENTS if start is not None}
+    TRIBE_STUDENT_SEMESTER    = {name: sem   for name, _, sem, *_      in CURRENT_TRIBE_STUDENTS if sem}
+    TRIBE_STUDENT_TRIBE       = {name: tribe for name, _, _, tribe, *_ in CURRENT_TRIBE_STUDENTS if tribe}
+    TRIBE_STUDENT_GILDE       = {name: gilde for name, _, _, _, gilde, *_ in CURRENT_TRIBE_STUDENTS if gilde}
+    TRIBE_STUDENT_COACH       = {name: coach for name, _, _, _, _, coach   in CURRENT_TRIBE_STUDENTS if coach}
+
+
+def _reload_gilde_students() -> None:
+    """Herlaadt PORTFLOW_GILDE_STUDENTS_JSON vanuit os.environ in de globale lookups."""
+    global CURRENT_GILDE_STUDENTS, GILDE_STUDENT_NAMES, GILDE_STUDENT_START_DATES
+    global GILDE_STUDENT_SEMESTER, GILDE_STUDENT_TRIBE, GILDE_STUDENT_GILDE, GILDE_STUDENT_COACH
+    CURRENT_GILDE_STUDENTS = parse_coach_students(
+        os.getenv("PORTFLOW_GILDE_STUDENTS_JSON", "").strip()
+    )
+    GILDE_STUDENT_NAMES       = {name for name, *_ in CURRENT_GILDE_STUDENTS}
+    GILDE_STUDENT_START_DATES = {name: start for name, start, *_ in CURRENT_GILDE_STUDENTS if start is not None}
+    GILDE_STUDENT_SEMESTER    = {name: sem   for name, _, sem, *_      in CURRENT_GILDE_STUDENTS if sem}
+    GILDE_STUDENT_TRIBE       = {name: tribe for name, _, _, tribe, *_ in CURRENT_GILDE_STUDENTS if tribe}
+    GILDE_STUDENT_GILDE       = {name: gilde for name, _, _, _, gilde, *_ in CURRENT_GILDE_STUDENTS if gilde}
+    GILDE_STUDENT_COACH       = {name: coach for name, _, _, _, _, coach   in CURRENT_GILDE_STUDENTS if coach}
+
+
+def _migrate_env_add_coach_field() -> None:
+    """Voegt het veld 'coach' toe aan bestaande entries in alle drie groepen (éénmalig)."""
+    _keys = [
+        ("PORTFLOW_COACH_STUDENTS_JSON", _reload_coach_students),
+        ("PORTFLOW_TRIBE_STUDENTS_JSON", _reload_tribe_students),
+        ("PORTFLOW_GILDE_STUDENTS_JSON", _reload_gilde_students),
+    ]
+    for env_key, reload_fn in _keys:
+        raw = os.getenv(env_key, "").strip()
+        if not raw:
+            continue
+        try:
+            lst: list = json.loads(re.sub(r",\s*([\]\}])", r"\1", raw))
+        except Exception:
+            continue
+        if not isinstance(lst, list):
+            continue
+        changed = False
+        for entry in lst:
+            if isinstance(entry, dict) and not entry.get("separator") and "coach" not in entry:
+                entry["coach"] = ""
+                changed = True
+        if changed:
+            parts = ["["]
+            for i, e in enumerate(lst):
+                comma = "," if i < len(lst) - 1 else ""
+                parts.append(f"    {json.dumps(e, ensure_ascii=False)}{comma}")
+            parts.append("    ]")
+            json_str = "\n".join(parts)
+            _write_env_key(env_key, json_str)
+            os.environ[env_key] = json_str
+            reload_fn()
+
+
+def _pick_env_group_and_add(student_name: str) -> bool:
+    """
+    Toont een keuzemenu voor coach/tribe/gilde en voegt student_name toe
+    aan de gekozen groep in .env. Geeft True terug bij succes.
+    """
+    _HL = "\033[48;2;100;160;220m\033[1m"
+    _RS = "\033[0m"
+
+    _groups = [
+        ("PORTFLOW_COACH_STUDENTS_JSON", "coach studenten", _reload_coach_students),
+        ("PORTFLOW_TRIBE_STUDENTS_JSON", "tribe studenten", _reload_tribe_students),
+        ("PORTFLOW_GILDE_STUDENTS_JSON", "gilde studenten", _reload_gilde_students),
+    ]
+    print(f"\nAan welke groep wil je '{student_name}' toevoegen?")
+    for i, (key, label, _) in enumerate(_groups, 1):
+        print(f"  {i}) {label}  ({key})")
+    print()
+
+    raw = input("Keuze (1/2/3): ").strip()
+    if not raw.isdigit() or not (1 <= int(raw) <= len(_groups)):
+        print("Ongeldige keuze.")
+        return False
+    chosen_idx = int(raw)
+    env_key, _, reload_fn = _groups[chosen_idx - 1]
+
+    # Herdruk met highlight
+    print(f"\033[{len(_groups) + 3}A\033[J", end="")
+    print(f"\nAan welke groep wil je '{student_name}' toevoegen?")
+    for i, (key, label, _) in enumerate(_groups, 1):
+        if i == chosen_idx:
+            print(f"  {_HL}{i}) {label}  ({key}){_RS}")
+        else:
+            print(f"  {i}) {label}  ({key})")
+    print()
+    print(f"Keuze (1/2/3): {raw}")
+
+    existing_raw = os.getenv(env_key, "").strip()
+    try:
+        existing_list: list = json.loads(re.sub(r",\s*([\]\}])", r"\1", existing_raw)) if existing_raw else []
+        if not isinstance(existing_list, list):
+            existing_list = []
+    except Exception:
+        existing_list = []
+
+    existing_names = {
+        (e.get("name") or "").lower()
+        for e in existing_list
+        if isinstance(e, dict) and not e.get("separator")
+    }
+    if student_name.lower() in existing_names:
+        print(f"  '{student_name}' staat al in {env_key}.")
+        return False
+
+    existing_list.append({"name": student_name, "start_date": None, "semester": "", "tribe": "", "gilde": "", "coach": ""})
+    existing_list = _group_by_tribe([e for e in existing_list if not e.get("separator")])
+
+    parts = ["["]
+    for i, e in enumerate(existing_list):
+        comma = "," if i < len(existing_list) - 1 else ""
+        parts.append(f"    {json.dumps(e, ensure_ascii=False)}{comma}")
+    parts.append("    ]")
+    json_str = "\n".join(parts)
+
+    _write_env_key(env_key, json_str)
+    os.environ[env_key] = json_str
+    reload_fn()
+    print(f"  '{student_name}' toegevoegd aan {env_key}.")
+    return True
+
+
+def _pick_student_from_list(names: list, header: str, token: str) -> "tuple[str | None, str]":
+    """
+    Toont een genummerde lijst van namen en laat de gebruiker er een kiezen.
+    Geeft (gekozen_naam, token) terug; naam is None bij annulering.
+    """
+    _HL = "\033[48;2;100;160;220m\033[1m"
+    _RS = "\033[0m"
+
+    number_width = max(2, len(str(len(names))))
+    print(f"\n{header} ({len(names)} gevonden):")
+    for i, name in enumerate(names, 1):
+        print(f"  {i:0{number_width}d}) {name}")
+    print()
+
+    raw = input("Kies een student (volgnummer): ").strip()
+    if not raw.isdigit() or not (1 <= int(raw) <= len(names)):
+        print("Ongeldige keuze.")
+        return None, token
+    chosen_idx = int(raw)
+    student_name = names[chosen_idx - 1]
+
+    # Herdruk met highlight
+    print(f"\033[{len(names) + 3}A\033[J", end="")
+    print(f"\n{header} ({len(names)} gevonden):")
+    for i, name in enumerate(names, 1):
+        if i == chosen_idx:
+            print(f"  {_HL}{i:0{number_width}d}) {name}{_RS}")
+        else:
+            print(f"  {i:0{number_width}d}) {name}")
+    print()
+    print(f"Kies een student (volgnummer): {raw}")
+
+    return student_name, token
+
+
+def _add_shared_student_to_env(token: str) -> tuple:
+    """
+    Haalt alle gedeelde studenten op, laat de gebruiker er een kiezen en
+    voegt die toe aan coach-, tribe- of gildegroep in .env.
+    Geeft (succes: bool, token: str) terug.
+    """
+    all_students, token = _fetch_shared(token)
+    if not all_students:
+        print("Geen studenten gevonden.")
+        return False, token
+
+    ordered = sorted(all_students.keys())
+    student_name, token = _pick_student_from_list(ordered, "Studenten met gedeeld portfolio", token)
+    if not student_name:
+        return False, token
+
+    return _pick_env_group_and_add(student_name), token
+
+
+def _get_received_invitations(token: str) -> "list[str]":
+    """
+    Haalt studenten op die een evaluatieverzoek naar mij hebben gestuurd
+    via GET /portfolios/{OWN_PORTFOLIO_ID}/progress-review/invitations/received.
+    Geeft een gesorteerde lijst van unieke studentnamen terug.
+    """
+    if not OWN_PORTFOLIO_ID:
+        print("PORTFLOW_OWN_PORTFOLIO_ID is niet ingesteld in .env.")
+        return []
+
+    headers = {"accept": "*/*", "authorization": f"Bearer {token}", "user-agent": "Mozilla/5.0"}
+    names: set = set()
+    page = 1
+
+    while True:
+        response = request_with_retries(
+            f"{BASE_URL}/portfolios/{OWN_PORTFOLIO_ID}/progress-review/invitations/received",
+            headers,
+            params={"page": page, "per_page": PER_PAGE},
+        )
+        if response in (None, "TOKEN_EXPIRED"):
+            break
+        if isinstance(response, requests.Response) and response.status_code == 404:
+            break
+        try:
+            data = response.json()
+        except Exception:
+            break
+        if not isinstance(data, list) or not data:
+            break
+        for item in data:
+            requester = item.get("requester") or {}
+            name = (requester.get("name") or requester.get("full_name") or "").strip()
+            if name:
+                names.add(name)
+        if len(data) < PER_PAGE:
+            break
+        page += 1
+
+    return sorted(names)
+
+
+def _add_invited_student_to_env(token: str) -> tuple:
+    """
+    Toont studenten die een evaluatieverzoek instuurden, laat er een kiezen
+    en voegt die toe aan een groep in .env.
+    Geeft (succes: bool, token: str) terug.
+    """
+    names = _get_received_invitations(token)
+    if not names:
+        print("Geen studenten gevonden die een evaluatieverzoek hebben gestuurd.")
+        return False, token
+
+    student_name, token = _pick_student_from_list(names, "Studenten met openstaand evaluatieverzoek", token)
+    if not student_name:
+        return False, token
+
+    return _pick_env_group_and_add(student_name), token
+
+
+def _add_non_coach_invited_student_to_env(token: str) -> tuple:
+    """
+    Toont studenten die een evaluatieverzoek instuurden maar niet in
+    PORTFLOW_COACH_STUDENTS_JSON staan, laat er een kiezen en voegt
+    die toe aan een groep in .env.
+    Geeft (succes: bool, token: str) terug.
+    """
+    all_names = _get_received_invitations(token)
+    if not all_names:
+        print("Geen studenten gevonden die een evaluatieverzoek hebben gestuurd.")
+        return False, token
+
+    known_lower = {
+        n.lower() for n in (COACH_STUDENT_NAMES | GILDE_STUDENT_NAMES)
+        if n != SEPARATOR_SENTINEL
+    }
+    names = [n for n in all_names if n.lower() not in known_lower]
+
+    if not names:
+        print("Alle studenten die evaluatieverzoeken stuurden staan al in PORTFLOW_COACH_STUDENTS_JSON of PORTFLOW_GILDE_STUDENTS_JSON.")
+        return False, token
+
+    student_name, token = _pick_student_from_list(
+        names, "Studenten met evaluatieverzoek (niet jouw coach-student)", token
+    )
+    if not student_name:
+        return False, token
+
+    return _pick_env_group_and_add(student_name), token
+
+
+def _enrich_env_from_excel(xlsx_path: Path) -> bool:
+    """
+    Vult semester, tribe en gilde aan voor studenten die al in een van de drie
+    groepen staan (PORTFLOW_COACH_STUDENTS_JSON, PORTFLOW_TRIBE_STUDENTS_JSON,
+    PORTFLOW_GILDE_STUDENTS_JSON), op basis van naam-matching met het Excel-bestand.
+    Kiest geen coach of gilde — verwerkt alle rijen.
+    """
+    try:
+        import openpyxl as _xl
+    except ImportError:
+        print("Fout: openpyxl is niet geïnstalleerd. Voer 'pip install openpyxl' uit.")
+        return False
+
+    wb = _xl.load_workbook(xlsx_path, data_only=True)
+    ws = wb.active
+    raw_headers = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+    col = {h: i for i, h in enumerate(raw_headers) if h}
+
+    # Bouw lookup: naam (lowercase) → velden uit Excel
+    excel_by_name: dict = {}
+    for r in ws.iter_rows(min_row=2, values_only=True):
+        if r[col["Nummer"]] is None:
+            continue
+        name = str(r[col["Naam"]] or "").strip()
+        if not name:
+            continue
+        excel_by_name[name.lower()] = {
+            "semester": _extract_semester_number(str(r[col["Semester"]] or "")),
+            "tribe":    _extract_tribe_from_project(str(r[col["Project"]] or "")),
+            "gilde":    str(r[col["Gilde voorkeur"]] or "").strip(),
+            "coach":    str(r[col["Coach"]] or "").strip(),
+        }
+
+    if not excel_by_name:
+        print("Geen studentrijen gevonden in het Excel-bestand.")
+        return False
+
+    _env_keys = [
+        ("PORTFLOW_COACH_STUDENTS_JSON", _reload_coach_students),
+        ("PORTFLOW_TRIBE_STUDENTS_JSON", _reload_tribe_students),
+        ("PORTFLOW_GILDE_STUDENTS_JSON", _reload_gilde_students),
+    ]
+
+    total_updated = 0
+    for env_key, reload_fn in _env_keys:
+        existing_raw = os.getenv(env_key, "").strip()
+        try:
+            existing_list: list = json.loads(re.sub(r",\s*([\]\}])", r"\1", existing_raw)) if existing_raw else []
+            if not isinstance(existing_list, list):
+                existing_list = []
+        except Exception:
+            existing_list = []
+
+        updated = 0
+        result = []
+        for entry in existing_list:
+            if not isinstance(entry, dict) or entry.get("separator"):
+                result.append(entry)
+                continue
+            key = (entry.get("name") or "").lower()
+            if key in excel_by_name:
+                xl = excel_by_name[key]
+                entry = dict(entry)
+                entry["semester"] = xl["semester"]
+                entry["tribe"]    = xl["tribe"]
+                entry["gilde"]    = xl["gilde"]
+                entry["coach"]    = xl["coach"]
+                updated += 1
+            result.append(entry)
+
+        if updated:
+            result = _group_by_tribe([e for e in result if not e.get("separator")])
+            parts = ["["]
+            for i, e in enumerate(result):
+                comma = "," if i < len(result) - 1 else ""
+                parts.append(f"    {json.dumps(e, ensure_ascii=False)}{comma}")
+            parts.append("    ]")
+            json_str = "\n".join(parts)
+            _write_env_key(env_key, json_str)
+            os.environ[env_key] = json_str
+            reload_fn()
+            total_updated += updated
+
+        print(f"  {env_key}: {updated} student(en) bijgewerkt.")
+
+    print(f"  Totaal: {total_updated} student(en) aangevuld vanuit Excel.")
+    return total_updated > 0
+
+
+def _import_gilde_from_excel(xlsx_path: Path) -> bool:
+    """
+    Interactief: kies een gilde uit het Excel-bestand en voeg de studenten toe
+    aan PORTFLOW_GILDE_STUDENTS_JSON. Studenten kunnen meerdere gildes hebben
+    (gescheiden door '/').
+    """
+    try:
+        import openpyxl as _xl
+    except ImportError:
+        print("Fout: openpyxl is niet geïnstalleerd. Voer 'pip install openpyxl' uit.")
+        return False
+
+    wb = _xl.load_workbook(xlsx_path, data_only=True)
+    ws = wb.active
+    raw_headers = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+    col = {h: i for i, h in enumerate(raw_headers) if h}
+
+    rows = [
+        row for row in ws.iter_rows(min_row=2, values_only=True)
+        if row[col["Nummer"]] is not None
+    ]
+
+    # Verzamel alle unieke gildes (split op '/')
+    alle_gildes: set = set()
+    for r in rows:
+        raw_gilde = str(r[col["Gilde voorkeur"]] or "").strip()
+        for g in raw_gilde.split("/"):
+            g = g.strip()
+            if g:
+                alle_gildes.add(g)
+
+    if not alle_gildes:
+        print("Geen gildes gevonden in het Excel-bestand.")
+        return False
+
+    _HL = "\033[48;2;100;160;220m\033[1m"
+    _RS = "\033[0m"
+
+    gildes = sorted(alle_gildes)
+    gilde_counts = {
+        gilde: sum(
+            1 for r in rows
+            if any(g.strip() == gilde for g in str(r[col["Gilde voorkeur"]] or "").split("/"))
+        )
+        for gilde in gildes
+    }
+
+    def _print_gilde_menu(highlight_idx: str | None = None) -> None:
+        print("\nBeschikbare gildes:")
+        for i, gilde in enumerate(gildes, 1):
+            label = f"{i}) {gilde}  ({gilde_counts[gilde]} studenten)"
+            if str(i) == highlight_idx:
+                print(f"  {_HL}{label}{_RS}")
+            else:
+                print(f"  {label}")
+        print()
+
+    _print_gilde_menu()
+    raw = input("Kies een gilde (volgnummer of naam): ").strip()
+
+    # Bepaal gekozen gilde
+    if raw.isdigit() and 1 <= int(raw) <= len(gildes):
+        chosen_gilde = gildes[int(raw) - 1]
+        chosen_idx = raw
+    else:
+        matches = [g for g in gildes if raw.lower() == g.lower()]
+        if not matches:
+            matches = [g for g in gildes if raw.lower() in g.lower()]
+        if len(matches) == 1:
+            chosen_gilde = matches[0]
+            chosen_idx = str(gildes.index(chosen_gilde) + 1)
+        elif len(matches) > 1:
+            print(f"Meerdere gildes gevonden: {', '.join(matches)}. Wees specifieker.")
+            return False
+        else:
+            print("Gilde niet gevonden.")
+            return False
+
+    # Herdruk menu met highlight op gekozen gilde
+    print(f"\033[{len(gildes) + 3}A\033[J", end="")
+    _print_gilde_menu(chosen_idx)
+    print(f"Kies een gilde (volgnummer of naam): {raw}")
+
+    gilde_rows = [
+        r for r in rows
+        if any(
+            g.strip() == chosen_gilde
+            for g in str(r[col["Gilde voorkeur"]] or "").split("/")
+        )
+    ]
+    print(f"\n{len(gilde_rows)} studenten gevonden voor gilde '{chosen_gilde}'.")
+
+    new_entries = _group_by_tribe([
+        {
+            "name":       str(r[col["Naam"]] or "").strip(),
+            "start_date": None,
+            "semester":   _extract_semester_number(str(r[col["Semester"]] or "")),
+            "tribe":      _extract_tribe_from_project(str(r[col["Project"]] or "")),
+            "gilde":      str(r[col["Gilde voorkeur"]] or "").strip(),
+            "coach":      str(r[col["Coach"]] or "").strip(),
+        }
+        for r in gilde_rows
+        if str(r[col["Naam"]] or "").strip()
+    ])
+
+    existing_raw = os.getenv("PORTFLOW_GILDE_STUDENTS_JSON", "").strip()
+    try:
+        existing_list: list = json.loads(re.sub(r",\s*([\]\}])", r"\1", existing_raw)) if existing_raw else []
+        if not isinstance(existing_list, list):
+            existing_list = []
+    except Exception:
+        existing_list = []
+
+    existing_names = {
+        (e.get("name") or "").lower()
+        for e in existing_list
+        if isinstance(e, dict) and not e.get("separator")
+    }
+    to_add = [e for e in new_entries if not e.get("separator") and (e.get("name") or "").lower() not in existing_names]
+    already = len(new_entries) - len([e for e in new_entries if e.get("separator")]) - len(to_add)
+
+    if already:
+        print(f"  {already} student(en) stonden al in PORTFLOW_GILDE_STUDENTS_JSON, worden overgeslagen.")
+    if not to_add:
+        print("  Geen nieuwe studenten toe te voegen.")
+        return False
+
+    # Voeg toe en sorteer volledige lijst op tribe + naam
+    all_entries = [e for e in existing_list if not e.get("separator")] + to_add
+    combined = _group_by_tribe(all_entries)
+
+    parts = ["["]
+    for i, e in enumerate(combined):
+        comma = "," if i < len(combined) - 1 else ""
+        parts.append(f"    {json.dumps(e, ensure_ascii=False)}{comma}")
+    parts.append("    ]")
+    json_str = "\n".join(parts)
+
+    _write_env_key("PORTFLOW_GILDE_STUDENTS_JSON", json_str)
+    os.environ["PORTFLOW_GILDE_STUDENTS_JSON"] = json_str
+    _reload_gilde_students()
+    print(f"  {len(to_add)} student(en) toegevoegd aan PORTFLOW_GILDE_STUDENTS_JSON.")
+    return True
+
+
+def _import_students_from_excel(xlsx_path: Path) -> bool:
+    """
+    Interactief: kies een coach, kies een importmodus en schrijf het resultaat
+    naar .env als PORTFLOW_COACH_STUDENTS_JSON.
+    Geeft True terug bij succes, False bij annulering of fout.
+    """
+    try:
+        import openpyxl as _xl
+    except ImportError:
+        print("Fout: openpyxl is niet geïnstalleerd. Voer 'pip install openpyxl' uit.")
+        return False
+
+    wb = _xl.load_workbook(xlsx_path, data_only=True)
+    ws = wb.active
+    raw_headers = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+    col = {h: i for i, h in enumerate(raw_headers) if h}
+
+    rows = [
+        row for row in ws.iter_rows(min_row=2, values_only=True)
+        if row[col["Nummer"]] is not None
+    ]
+
+    # Unieke coaches, gesorteerd
+    coaches = sorted({str(r[col["Coach"]] or "").strip() for r in rows} - {""})
+    if not coaches:
+        print("Geen coaches gevonden in het Excel-bestand.")
+        return False
+
+    print("\nBeschikbare coaches:")
+    for i, coach in enumerate(coaches, 1):
+        n = sum(1 for r in rows if str(r[col["Coach"]] or "").strip() == coach)
+        print(f"  {i}) {coach}  ({n} studenten)")
+    print()
+
+    raw = input("Kies een coach (volgnummer of naam): ").strip()
+    if raw.isdigit() and 1 <= int(raw) <= len(coaches):
+        chosen = coaches[int(raw) - 1]
+    else:
+        matches = [c for c in coaches if raw.lower() in c.lower()]
+        if len(matches) == 1:
+            chosen = matches[0]
+        elif len(matches) > 1:
+            print(f"Meerdere coaches gevonden: {', '.join(matches)}. Wees specifieker.")
+            return False
+        else:
+            print("Coach niet gevonden.")
+            return False
+
+    coach_rows = [r for r in rows if str(r[col["Coach"]] or "").strip() == chosen]
+    print(f"\n{len(coach_rows)} studenten gevonden voor coach '{chosen}'.")
+
+    # Bouw Excel-lookup: genormaliseerde naam → velden uit Excel
+    def _excel_entry(r: tuple) -> dict:
+        return {
+            "name":       str(r[col["Naam"]] or "").strip(),
+            "start_date": None,
+            "semester":   _extract_semester_number(str(r[col["Semester"]] or "")),
+            "tribe":      _extract_tribe_from_project(str(r[col["Project"]] or "")),
+            "gilde":      str(r[col["Gilde voorkeur"]] or "").strip(),
+            "coach":      chosen,
+        }
+
+    excel_by_name = {
+        str(r[col["Naam"]] or "").strip().lower(): _excel_entry(r)
+        for r in coach_rows
+        if str(r[col["Naam"]] or "").strip()
+    }
+
+    # Huidige .env-waarde als lijst van dicts (inclusief separators)
+    existing_raw = os.getenv("PORTFLOW_COACH_STUDENTS_JSON", "").strip()
+    try:
+        existing_list: list = json.loads(re.sub(r",\s*([\]\}])", r"\1", existing_raw)) if existing_raw else []
+        if not isinstance(existing_list, list):
+            existing_list = []
+    except Exception:
+        existing_list = []
+
+    # Importmodus kiezen
+    print("\nWat wil je doen?")
+    print("  1) Veilig: vul alleen informatie aan voor studenten die al in .env staan")
+    print("  2) Veilig: vul PORTFLOW_COACH_STUDENTS_JSON aan met studenten die wel in Excel,")
+    print("             maar nog niet in .env staan")
+    print("  3) Gevaarlijk: vervang PORTFLOW_COACH_STUDENTS_JSON door de inhoud van het excelbestand")
+    print()
+    mode = input("Keuze (1/2/3 of 'q' om te annuleren): ").strip()
+    if mode.lower() == "q" or mode not in ("1", "2", "3"):
+        print("Geannuleerd.")
+        return False
+
+    if mode == "1":
+        # Update bestaande studenten: overschrijf semester/tribe/gilde uit Excel; behoud start_date
+        updated = 0
+        result = []
+        for entry in existing_list:
+            if not isinstance(entry, dict) or entry.get("separator"):
+                result.append(entry)
+                continue
+            key = (entry.get("name") or "").lower()
+            if key in excel_by_name:
+                xl = excel_by_name[key]
+                entry = dict(entry)
+                entry["semester"] = xl["semester"]
+                entry["tribe"]    = xl["tribe"]
+                entry["gilde"]    = xl["gilde"]
+                entry["coach"]    = xl["coach"]
+                updated += 1
+            result.append(entry)
+        entries = _group_by_tribe([e for e in result if not e.get("separator")])
+        print(f"  {updated} bestaande student(en) bijgewerkt.")
+
+    elif mode == "2":
+        # Voeg studenten toe die nog niet in .env staan
+        existing_names = {
+            (e.get("name") or "").lower()
+            for e in existing_list
+            if isinstance(e, dict) and not e.get("separator")
+        }
+        raw_new = [xl for key, xl in excel_by_name.items() if key not in existing_names]
+        all_entries = [e for e in existing_list if not e.get("separator")] + raw_new
+        entries = _group_by_tribe(all_entries)
+        print(f"  {len(raw_new)} nieuwe student(en) toegevoegd (gegroepeerd op tribe).")
+
+    else:  # mode == "3"
+        ans = input(
+            "Dit vervangt de volledige lijst in .env. Weet je het zeker? [j/N] "
+        ).strip().lower()
+        if ans not in ("j", "y", "ja", "yes"):
+            print("Geannuleerd.")
+            return False
+        entries = _group_by_tribe([xl for xl in excel_by_name.values() if xl["name"]])
+        n_students = sum(1 for e in entries if not e.get("separator"))
+        print(f"  {n_students} studenten worden weggeschreven, gegroepeerd op tribe (volledige vervanging).")
+
+    # Schrijf als meerregelige JSON (zelfde stijl als huidige .env)
+    parts = ["["]
+    for i, e in enumerate(entries):
+        comma = "," if i < len(entries) - 1 else ""
+        parts.append(f"    {json.dumps(e, ensure_ascii=False)}{comma}")
+    parts.append("    ]")
+    json_str = "\n".join(parts)
+
+    _write_env_key("PORTFLOW_COACH_STUDENTS_JSON", json_str)
+    os.environ["PORTFLOW_COACH_STUDENTS_JSON"] = json_str
+    _reload_coach_students()
+    print(f"  Klaar. PORTFLOW_COACH_STUDENTS_JSON bijgewerkt in .env.")
+    return True
 
 def request_with_retries(url, headers, params=None, max_attempts=3):
     attempt = 0
@@ -715,6 +1505,46 @@ def extract_students(shared_items):
 # ------------------------
 # Portfolio & feedback fetching
 # ------------------------
+
+def get_sent_invitations(token, portfolio_id) -> dict:
+    """
+    Haalt openstaande review requests op die vanuit dit portfolio zijn verzonden.
+    Geeft een dict terug: review_request_id → reviewer_name.
+
+    Gebruikt: GET /portfolios/{id}/progress-review/invitations/sent
+    """
+    headers = {"accept": "*/*", "authorization": f"Bearer {token}", "user-agent": "Mozilla/5.0"}
+    response = request_with_retries(
+        f"{BASE_URL}/portfolios/{portfolio_id}/progress-review/invitations/sent",
+        headers,
+        params={"per_page": PER_PAGE},
+    )
+    if response in (None, "TOKEN_EXPIRED"):
+        return {}
+    if isinstance(response, requests.Response) and response.status_code == 404:
+        return {}
+    try:
+        data = response.json()
+    except Exception:
+        return {}
+    if not isinstance(data, list):
+        return {}
+
+    mapping: dict = {}
+    for item in data:
+        rid = item.get("review_request_id")
+        if not rid:
+            continue
+        reviewer_obj = item.get("reviewer") or {}
+        name = (
+            reviewer_obj.get("name")
+            or reviewer_obj.get("full_name")
+            or item.get("reviewer_name")
+        )
+        if name:
+            mapping[rid] = name
+    return mapping
+
 
 def get_goals(token, portfolio_id):
     headers = {"accept": "*/*", "authorization": f"Bearer {token}"}
@@ -1026,6 +1856,10 @@ def collect_results(
             continue
         any_accessible = True
 
+        # Haal reviewer-namen op voor openstaande review requests (self-evaluaties).
+        # Alleen nodig als we pending items tonen.
+        rid_to_reviewer: dict = get_sent_invitations(token, portfolio_id) if include_ungraded else {}
+
         for goal in goals:
             goal_id = goal["id"]
             goal_name = goal["name"]
@@ -1167,14 +2001,24 @@ def collect_results(
                 if details:
                     evaluation_text = f"{level} ({', '.join(details)})"
 
-                _ev_reviewer = ((evaluation or {}).get("reviewer") or {}).get("name")
+                _pending_role = item.get("role")
+                if _pending_role == "self" and is_pending:
+                    # evaluation.reviewer is the student themselves on self-eval items.
+                    # Look up the actual assigned assessor via the sent-invitations map.
+                    _rid = (evaluation or {}).get("review_request_id")
+                    _ev_reviewer = rid_to_reviewer.get(_rid) if _rid else None
+                else:
+                    _ev_reviewer = (
+                        None if _pending_role == "self"
+                        else ((evaluation or {}).get("reviewer") or {}).get("name")
+                    )
                 results.append({
                     "student_name": student_name,
                     "goal_name": goal_name,
                     "evaluation": evaluation_text,
                     "submitted_at_iso": evaluation_datetime.isoformat() if evaluation_datetime else None,
                     "pending_detail": {
-                        "reviewer": _ev_reviewer or reviewer_name,
+                        "reviewer": _ev_reviewer,
                         "date": evaluation_date,
                         "title": (evaluation or {}).get("review_request_title"),
                     } if is_pending else None,
@@ -1225,14 +2069,13 @@ def collect_results(
                     if _rid in reviewer_rids:
                         continue
                     _self_dt = resolve_evaluation_date(_sitem, _sev)
-                    _self_reviewer = (_sev.get("reviewer") or {}).get("name")
                     results.append({
                         "student_name": student_name,
                         "goal_name": goal_name,
                         "evaluation": "?",
                         "submitted_at_iso": _self_dt.isoformat() if _self_dt else None,
                         "pending_detail": {
-                            "reviewer": _self_reviewer,
+                            "reviewer": rid_to_reviewer.get(_rid),
                             "date": format_short_date(_self_dt),
                             "title": _sev.get("review_request_title"),
                         },
@@ -1329,8 +2172,6 @@ def print_student_evaluations(token, student_name, student_data, semester_scope=
     if results == "TOKEN_EXPIRED":
         return "TOKEN_EXPIRED"
 
-    print(f"\n{student_name}")
-
     # Splits in behaald en ingediend (pending)
     achieved: dict = {}   # goal -> list of formatted strings
     pending: dict = {}    # goal -> list of formatted strings
@@ -1359,11 +2200,11 @@ def print_student_evaluations(token, student_name, student_data, semester_scope=
             achieved.setdefault(goal, []).append(ev)
 
     if achieved:
-        print("\nBehaalde evaluaties:")
+        print("Behaalde evaluaties:")
         for goal, parts in achieved.items():
             print(f"  {goal}: {', '.join(parts)}")
     else:
-        print("\nBehaalde evaluaties: (geen)")
+        print("Behaalde evaluaties: (geen)")
 
     if ARGS.vraagtekens:
         if pending:
@@ -1387,14 +2228,15 @@ def extract_level_short(evaluation_text: str) -> str:
     return evaluation_text
 
 
-def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=None, tribe_map=None, gilde_map=None):
+def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=None, tribe_map=None, gilde_map=None, coach_map=None):
     if not results and not all_names:
         print("No data to display.")
         return
 
-    _sem_map = sem_map if sem_map is not None else COACH_STUDENT_SEMESTER
+    _sem_map   = sem_map   if sem_map   is not None else COACH_STUDENT_SEMESTER
     _tribe_map = tribe_map if tribe_map is not None else COACH_STUDENT_TRIBE
     _gilde_map = gilde_map if gilde_map is not None else COACH_STUDENT_GILDE
+    _coach_map = coach_map  # None = geen Coach-kolom tonen
 
     # Achtergrondkleuren per groep (24-bit ANSI, passend bij de Open ICT kleurkaart)
     _BG_BLUE  = "\033[48;2;119;140;163m"   # blauw-grijs  (OC, KO, JKO, KPM)
@@ -1438,10 +2280,11 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
             width = max(width, len(cell))
         col_widths.append(width)
 
-    name_width = max(len("Naam"), max(len(s) for s in student_goals))
-    sem_width = max(len("Semester"), max((len(f"Semester {_sem_map.get(s, '')}".strip() if _sem_map.get(s) else "") for s in student_goals), default=0))
+    name_width  = max(len("Naam"), max(len(s) for s in student_goals))
+    sem_width   = max(len("Semester"), max((len(f"Semester {_sem_map.get(s, '')}".strip() if _sem_map.get(s) else "") for s in student_goals), default=0))
     tribe_width = max(len("Tribe"), max((len(_tribe_map.get(s, "")) for s in student_goals), default=0))
     gilde_width = max(len("Gilde"), max((len(_gilde_map.get(s, "")) for s in student_goals), default=0))
+    coach_width = max(len("Coach"), max((len(_coach_map.get(s, "")) for s in student_goals), default=0)) if _coach_map is not None else 0
 
     # Bereken visuele breedte voor de scheidingslijn (zonder ANSI-codes)
     _plain_header = f"{'Naam':<{name_width}}"
@@ -1450,6 +2293,8 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
     _plain_header += f" | {'Tribe':<{tribe_width}}"
     _plain_header += f" | {'Semester':<{sem_width}}"
     _plain_header += f" | {'Gilde':<{gilde_width}}"
+    if _coach_map is not None:
+        _plain_header += f" | {'Coach':<{coach_width}}"
     separator = "-" * len(_plain_header)
 
     # Gekleurde header
@@ -1460,6 +2305,8 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
     header += f" | {'Tribe':<{tribe_width}}"
     header += f" | {'Semester':<{sem_width}}"
     header += f" | {'Gilde':<{gilde_width}}"
+    if _coach_map is not None:
+        header += f" | {'Coach':<{coach_width}}"
     print()
     print(header)
     print(separator)
@@ -1473,24 +2320,28 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
         if student_name not in student_goals:
             continue
         goals = student_goals[student_name]
-        display_name = "*" * len(student_name) if ARGS.anoniem else student_name
+        display_name = anonymize_name(student_name) if ARGS.anoniem else student_name
         sem_raw = _sem_map.get(student_name, "")
         sem = f"Semester {sem_raw}" if sem_raw else ""
         tribe = _tribe_map.get(student_name, "")
         gilde = _gilde_map.get(student_name, "")
+        coach = _coach_map.get(student_name, "") if _coach_map is not None else ""
         display_tribe = "******" if ARGS.anoniem else tribe
         display_sem = "******" if ARGS.anoniem else sem
         display_gilde = "******" if ARGS.anoniem else gilde
+        display_coach = "******" if ARGS.anoniem else coach
 
         # Inaccessible student: portfolio niet zichtbaar voor deze coach
         if inaccessible_names and student_name in inaccessible_names:
             row = f"\033[2m{display_name:<{name_width}}\033[0m"
             for (full_name, _), w in zip(GOAL_COLUMNS, col_widths):
                 bg = _GOAL_BG[full_name]
-                row += f" | \033[2m{bg}{'n/b' if w >= 3 else '-':<{w}}{_RESET}\033[0m"
+                row += f" | \033[2m{'n/b' if w >= 3 else '-':<{w}}\033[0m"
             row += f" | \033[2m{display_tribe:<{tribe_width}}\033[0m"
             row += f" | \033[2m{display_sem:<{sem_width}}\033[0m"
             row += f" | \033[2m{display_gilde:<{gilde_width}}\033[0m"
+            if _coach_map is not None:
+                row += f" | \033[2m{display_coach:<{coach_width}}\033[0m"
             print(row)
             continue
 
@@ -1503,7 +2354,6 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
         row = f"{display_name:<{name_width}}"
         for (full_name, _), w in zip(GOAL_COLUMNS, col_widths):
             cell = ", ".join(goals.get(full_name, []))
-            bg = _GOAL_BG[full_name]
             if _alert and full_name in _alert_goals and not cell:
                 row += f" | \033[41m{' ' * w}\033[0m"
             elif _soft_all and full_name in _soft_goals and not cell:
@@ -1513,10 +2363,12 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
             elif "?" in cell:
                 row += f" | \033[104m{cell:<{w}}\033[0m"
             else:
-                row += f" | {bg}{cell:<{w}}{_RESET}"
+                row += f" | {cell:<{w}}"
         row += f" | {display_tribe:<{tribe_width}}"
         row += f" | {display_sem:<{sem_width}}"
         row += f" | {display_gilde:<{gilde_width}}"
+        if _coach_map is not None:
+            row += f" | {display_coach:<{coach_width}}"
         print(row)
 
     if inaccessible_names and any(n in inaccessible_names for n in (all_names or []) if n != SEPARATOR_SENTINEL):
@@ -1576,6 +2428,37 @@ def _fetch_shared(token):
         return extract_students(shared_items), token
 
 
+_migrate_env_add_coach_field()
+
+# Bepaal het te gebruiken Excel-bestand (eenmalig bij opstarten)
+_xlsx_candidates = _find_excel_with_student_columns() if ARGS.admin else []
+if ARGS.admin and len(_xlsx_candidates) > 1:
+    _HL = "\033[48;2;100;160;220m\033[1m"
+    _RS = "\033[0m"
+    print("\nMeerdere Excel-bestanden gevonden met de juiste kolomkoppen:")
+    for _i, (_, _fn_c) in enumerate(_xlsx_candidates, 1):
+        print(f"  {_i}) [{_fn_c}]")
+    print()
+    _raw_xls = input(f"Welk bestand wil je gebruiken? (1-{len(_xlsx_candidates)}): ").strip()
+    if _raw_xls.isdigit() and 1 <= int(_raw_xls) <= len(_xlsx_candidates):
+        _xlsx_idx = int(_raw_xls) - 1
+        print(f"\033[{len(_xlsx_candidates) + 3}A\033[J", end="")
+        print("\nMeerdere Excel-bestanden gevonden met de juiste kolomkoppen:")
+        for _i, (_, _fn_c) in enumerate(_xlsx_candidates, 1):
+            if _i - 1 == _xlsx_idx:
+                print(f"  {_HL}{_i}) [{_fn_c}]{_RS}")
+            else:
+                print(f"  {_i}) [{_fn_c}]")
+        print()
+        print(f"Welk bestand wil je gebruiken? (1-{len(_xlsx_candidates)}): {_raw_xls}")
+        _xlsx_info: "tuple[Path, str] | None" = _xlsx_candidates[_xlsx_idx]
+    else:
+        _xlsx_info = _xlsx_candidates[0]
+elif _xlsx_candidates:
+    _xlsx_info = _xlsx_candidates[0]
+else:
+    _xlsx_info = None
+
 try:
     while True:
         semester_scope = choose_semester_scope()
@@ -1588,23 +2471,92 @@ try:
         _HL = "\033[48;2;100;160;220m\033[1m"   # lichtblauw + bold
         _RS = "\033[0m"
         _pre_qty = ({"1": "1", "meer": "2"}.get(ARGS.aantal) if ARGS.aantal else None)
-        _opt1 = f"{_HL}  1) Één student       {_RS}" if _pre_qty == "1"   else "  1) Één student"
-        _opt2 = f"{_HL}  2) Meerdere studenten{_RS}" if _pre_qty == "2"   else "  2) Meerdere studenten"
+        _admin = ARGS.admin
+        _valid_choices = {"1", "2"}
+        if _admin:
+            _valid_choices.update({"5", "6", "7"})
+            if _xlsx_info:
+                _valid_choices.update({"3", "4", "8"})
+
+        _fn = f"[{_xlsx_info[1]}]" if _xlsx_info else ""
+        _opt1 = f"  {_HL}1) Één student{_RS}" if _pre_qty == "1" else "  1) Één student"
+        _opt2 = f"  {_HL}2) Meerdere studenten{_RS}" if _pre_qty == "2" else "  2) Meerdere studenten"
+        _opt5_txt = "5) Toon alle studenten waarvan ik het portfolio kan zien en voeg er eentje toe aan .env"
+        _opt6_txt = "6) Toon alle studenten die evaluatieverzoeken naar mij stuurden en voeg er eentje toe aan .env"
+        _opt7_txt = "7) Toon studenten die evaluatieverzoeken stuurden maar niet mijn coach-student zijn, en niet in PORTFLOW_GILDE_STUDENTS_JSON staan, en voeg er eentje toe aan .env"
+        _opt8_txt = lambda fn: f"8) Vul semester, tribe en gilde aan voor bestaande studenten in alle drie groepen vanuit {fn}"
         print("\nVoor hoeveel studenten wil je de evaluaties zien? (commandline: --aantal 1  of  --aantal meer)")
         print(_opt1)
         print(_opt2)
+        _menu_lines = 2
+        if _admin:
+            if _xlsx_info:
+                print(f"  3) Lees {_fn}, kies een coach, en voeg studenten toe aan .env (PORTFLOW_COACH_STUDENTS_JSON)")
+                print(f"  4) Lees {_fn}, kies een gilde en voeg studenten toe aan PORTFLOW_GILDE_STUDENTS_JSON")
+                _menu_lines += 2
+            print(f"  {_opt5_txt}")
+            print(f"  {_opt6_txt}")
+            print(f"  {_opt7_txt}")
+            _menu_lines += 3
+            if _xlsx_info:
+                print(f"  {_opt8_txt(_fn)}")
+                _menu_lines += 1
+
         if _pre_qty:
             qty = _pre_qty
         else:
             qty = input("Keuze (of 'q' om te stoppen): ").strip()
-            if qty in ("1", "2"):
-                # Ga terug: wis de inputregel + de 2 opties + de vraagregel (4 regels)
-                print(f"\033[4A\033[J", end="")
-                _opt1h = f"{_HL}  1) Één student       {_RS}" if qty == "1" else "  1) Één student"
-                _opt2h = f"{_HL}  2) Meerdere studenten{_RS}" if qty == "2" else "  2) Meerdere studenten"
+            if qty in _valid_choices:
+                # Wis inputregel + opties + vraagregel
+                print(f"\033[{_menu_lines + 2}A\033[J", end="")
+                _opt1h = f"  {_HL}1) Één student{_RS}" if qty == "1" else "  1) Één student"
+                _opt2h = f"  {_HL}2) Meerdere studenten{_RS}" if qty == "2" else "  2) Meerdere studenten"
                 print("Voor hoeveel studenten wil je de evaluaties zien? (commandline: --aantal 1  of  --aantal meer)")
                 print(_opt1h)
                 print(_opt2h)
+                if _admin:
+                    if _xlsx_info:
+                        _opt3_hl = f"  {_HL}3) Lees {_fn} in{_RS}" if qty == "3" else f"  3) Lees {_fn}, kies een coach, en voeg studenten toe aan .env (PORTFLOW_COACH_STUDENTS_JSON)"
+                        _opt4_hl = f"  {_HL}4) Lees {_fn}, kies een gilde ...{_RS}" if qty == "4" else f"  4) Lees {_fn}, kies een gilde en voeg studenten toe aan .env (PORTFLOW_GILDE_STUDENTS_JSON)"
+                        print(_opt3_hl)
+                        print(_opt4_hl)
+                    _opt5h = f"  {_HL}{_opt5_txt}{_RS}" if qty == "5" else f"  {_opt5_txt}"
+                    _opt6h = f"  {_HL}{_opt6_txt}{_RS}" if qty == "6" else f"  {_opt6_txt}"
+                    _opt7h = f"  {_HL}{_opt7_txt}{_RS}" if qty == "7" else f"  {_opt7_txt}"
+                    print(_opt5h)
+                    print(_opt6h)
+                    print(_opt7h)
+                    if _xlsx_info:
+                        _opt8h = f"  {_HL}{_opt8_txt(_fn)}{_RS}" if qty == "8" else f"  {_opt8_txt(_fn)}"
+                        print(_opt8h)
+
+        if qty == "3":
+            if _xlsx_info:
+                _import_students_from_excel(_xlsx_info[0])
+            continue
+
+        if qty == "4":
+            if _xlsx_info:
+                _import_gilde_from_excel(_xlsx_info[0])
+            continue
+
+        if qty == "5":
+            _, token = _add_shared_student_to_env(token)
+            continue
+
+        if qty == "6":
+            _, token = _add_invited_student_to_env(token)
+            continue
+
+        if qty == "7":
+            _, token = _add_non_coach_invited_student_to_env(token)
+            continue
+
+        if qty == "8":
+            if _xlsx_info:
+                _enrich_env_from_excel(_xlsx_info[0])
+            continue
+
         if qty.lower() == "q":
             print("Exiting gracefully. Goodbye!")
             exit()
@@ -1633,7 +2585,7 @@ try:
                 print("\nWelke student?")
                 for i, (_, label) in enumerate(options, start=1):
                     if str(i) == highlight_idx:
-                        print(f"{_HL}  {i}) {label}{_RS}")
+                        print(f"  {_HL}{i}) {label}{_RS}")
                     else:
                         print(f"  {i}) {label}")
 
@@ -1743,9 +2695,11 @@ try:
                 print("\nStudenten:")
                 if _all_same_tribe:
                     for i, (idx, sname) in enumerate(list(_tribe_groups.values())[0], start=0):
-                        entry = f"  {idx:0{number_width}d}) {sname}"
+                        display_sname = anonymize_name(sname) if ARGS.anoniem else sname
+                        entry_text = f"{idx:0{number_width}d}) {display_sname}"
+                        entry = f"  {entry_text}"
                         padded = f"{entry:<{_col_w}}"
-                        display = f"{_HL}{entry}{_RS}{' ' * (_col_w - len(entry))}" if highlight_name and sname == highlight_name else padded
+                        display = f"  {_HL}{entry_text}{_RS}{' ' * (_col_w - len(entry))}" if highlight_name and sname == highlight_name else padded
                         end = "\n" if (i + 1) % _cols == 0 or idx == len(ordered_names) else ""
                         print(display, end=end)
                     if len(ordered_names) % _cols != 0:
@@ -1764,7 +2718,8 @@ try:
                                 grp = _tribe_groups[t]
                                 if row < len(grp):
                                     idx, sname = grp[row]
-                                    cell = f"{idx:0{number_width}d}) {sname}"
+                                    display_sname = anonymize_name(sname) if ARGS.anoniem else sname
+                                    cell = f"{idx:0{number_width}d}) {display_sname}"
                                     padded = f"{cell:<{_tribe_col_w[t]}}"
                                     cell_out = f"{_HL}{cell}{_RS}{' ' * (_tribe_col_w[t] - len(cell))}" if highlight_name and sname == highlight_name else padded
                                 else:
@@ -1778,12 +2733,15 @@ try:
             else:
                 _list_lines = 2 + sum(max(len(_tribe_groups[t]) for t in batch) + 3 for batch in tribe_batches)
 
-            _print_student_list()
+            _pre_student = ARGS.student
+            if not _pre_student:
+                _print_student_list()
 
-            selection = input("Kies een student (nummer of naam): ").strip()
+            selection = _pre_student or input("Kies een student (nummer of naam): ").strip()
             name = resolve_student_selection(selection, ordered_names, students)
             if name and selection.isdigit():
-                print(f"\033[{_list_lines + 1}A\033[J", end="")
+                if not _pre_student:
+                    print(f"\033[{_list_lines + 1}A\033[J", end="")
                 _print_student_list(highlight_name=name)
                 print(f"Kies een student (nummer of naam): {selection}")
             if not name:
@@ -1829,7 +2787,7 @@ try:
                 print("\nWelke groep studenten?")
                 for i, (_, label) in enumerate(options, start=1):
                     if str(i) == highlight_idx:
-                        print(f"{_HL}  {i}) {label}{_RS}")
+                        print(f"  {_HL}{i}) {label}{_RS}")
                     else:
                         print(f"  {i}) {label}")
 
@@ -1909,7 +2867,7 @@ try:
                     all_results.extend(res)
                 else:
                     print()
-                    print_coach_table(all_results, all_names=tribe_names_list, inaccessible_names=inaccessible, sem_map=TRIBE_STUDENT_SEMESTER, tribe_map=TRIBE_STUDENT_TRIBE, gilde_map=TRIBE_STUDENT_GILDE)
+                    print_coach_table(all_results, all_names=tribe_names_list, inaccessible_names=inaccessible, sem_map=TRIBE_STUDENT_SEMESTER, tribe_map=TRIBE_STUDENT_TRIBE, gilde_map=TRIBE_STUDENT_GILDE, coach_map=TRIBE_STUDENT_COACH)
                     maybe_write_schema_report()
                     maybe_write_pending_debug_report()
 
@@ -1932,7 +2890,7 @@ try:
                     all_results.extend(res)
                 else:
                     print()
-                    print_coach_table(all_results, all_names=gilde_names_list, inaccessible_names=inaccessible, sem_map=GILDE_STUDENT_SEMESTER, tribe_map=GILDE_STUDENT_TRIBE, gilde_map=GILDE_STUDENT_GILDE)
+                    print_coach_table(all_results, all_names=gilde_names_list, inaccessible_names=inaccessible, sem_map=GILDE_STUDENT_SEMESTER, tribe_map=GILDE_STUDENT_TRIBE, gilde_map=GILDE_STUDENT_GILDE, coach_map=GILDE_STUDENT_COACH)
                     maybe_write_schema_report()
                     maybe_write_pending_debug_report()
 
