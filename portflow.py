@@ -2367,6 +2367,7 @@ def collect_results(
 def print_week_barchart(results, override_start=None):
     import math as _math
     from datetime import timedelta as _td
+    MAX_ROWS = 10
     sem_start = override_start if override_start is not None else CURRENT_SEMESTER_START
     sem_end   = CURRENT_SEMESTER_END
 
@@ -2397,28 +2398,45 @@ def print_week_barchart(results, override_start=None):
     if not any(c > 0 for c in counts):
         return
 
-    max_count = max(counts)
+    max_count    = max(counts)
+    display_rows = min(max_count, MAX_ROWS)
     COL_W = 5  # chars per week column: " ██  " or "     "
 
-    # Y-axis label width: digits + 1 space before │
-    y_w = len(str(max_count)) + 1
+    # Scale each count proportionally to display_rows; non-zero counts get at least 1 bar
+    bar_heights = [
+        max(1, round(c * display_rows / max_count)) if c > 0 else 0
+        for c in counts
+    ]
+
+    # Real-value label for each row on the Y-axis
+    row_labels = {
+        row_val: round(row_val * max_count / display_rows)
+        for row_val in range(1, display_rows + 1)
+    }
+
+    # Y-axis label width: based on largest real-value label
+    y_w = len(str(max(row_labels.values()))) + 1
 
     # Week start dates (Monday of each week from sem_start)
     week_starts = [sem_start + _td(days=7 * i) for i in range(num_weeks)]
 
     # Alignment helpers
-    #   bar rows:   "{y_w chars} │{bar data}"  → bars start at col y_w+2
-    #   axis:       "{y_w+1 spaces}╠{'═'*...}╣"
-    #   week/date:  "{y_w+2 spaces}{labels}"
     axis_prefix  = " " * (y_w + 1)
     label_prefix = " " * (y_w + 2)
 
     print()
 
-    # Bar rows from max_count down to 1
-    for row_val in range(max_count, 0, -1):
-        y_label = f"{row_val:>{y_w}} │"
-        row = "".join(" ██  " if c >= row_val else "     " for c in counts)
+    # Actual counts above the bars (shown for every non-zero week)
+    count_prefix = " " * (y_w + 2)
+    count_row = count_prefix + "".join(
+        str(c).center(COL_W) if c > 0 else " " * COL_W for c in counts
+    )
+    print(count_row)
+
+    # Bar rows from display_rows down to 1; height is proportionally scaled
+    for row_val in range(display_rows, 0, -1):
+        y_label = f"{row_labels[row_val]:>{y_w}} │"
+        row = "".join(" ██  " if bar_heights[i] >= row_val else "     " for i in range(num_weeks))
         print(y_label + row)
 
     # X-axis
@@ -2648,6 +2666,7 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
 
     if inaccessible_names and any(n in inaccessible_names for n in (all_names or []) if n != SEPARATOR_SENTINEL):
         print("  \033[2mn/b = portfolio niet zichtbaar (geen toegang)\033[0m")
+    print_week_barchart(results)
     print()
 
 
