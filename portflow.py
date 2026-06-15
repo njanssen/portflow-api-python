@@ -4,6 +4,8 @@ import time
 import argparse
 import json
 import os
+import re
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -100,6 +102,14 @@ def parse_coach_students(raw_json: str):
     return students
 
 
+print(r"  ____            _    __ _                ")
+print(r" |  _ \ ___  _ __| |_ / _| | _____      __ ")
+print(r" | |_) / _ \| '__| __| |_| |/ _ \ \ /\ / / ")
+print(r" |  __/ (_) | |  | |_|  _| | (_) \ V  V /  ")
+print(r" |_|   \___/|_|   \__|_| |_|\___/ \_/\_/   ")
+print(r"      dashboard  —  peter.snoek@hu.nl      ")
+print()
+
 load_env_file()
 
 BASE_URL = "https://portfolio.drieam.app/api/v1"
@@ -107,8 +117,49 @@ PER_PAGE = 200
 BEARER_TOKEN = os.getenv("PORTFLOW_BEARER_TOKEN", "").strip()
 
 SECTION_ID = "72086"
-CURRENT_SEMESTER_START = datetime(2026, 2, 12).date()
-CURRENT_SEMESTER_END = datetime(2026, 6, 30).date()
+
+
+def _load_semester_dates() -> tuple:
+    """Lees semester datums uit .env; vraag interactief als ze ontbreken."""
+    env_file = Path(__file__).resolve().parent / ".env"
+
+    def _read_date(key: str, prompt: str):
+        val = os.getenv(key, "").strip()
+        if val:
+            try:
+                return datetime.strptime(val, "%Y-%m-%d").date()
+            except ValueError:
+                print(f"Waarschuwing: {key} heeft ongeldige datum '{val}'. Verwacht YYYY-MM-DD.")
+        # Ontbreekt of ongeldig — vraag interactief
+        while True:
+            answer = input(f"{prompt} (YYYY-MM-DD): ").strip()
+            try:
+                date_obj = datetime.strptime(answer, "%Y-%m-%d").date()
+                # Schrijf terug naar .env
+                if env_file.exists():
+                    text = env_file.read_text(encoding="utf-8")
+                    import re as _re2
+                    pattern = rf"^{key}=.*$"
+                    replacement = f"{key}={answer}"
+                    if _re2.search(pattern, text, flags=_re2.MULTILINE):
+                        text = _re2.sub(pattern, replacement, text, flags=_re2.MULTILINE)
+                    else:
+                        text = text.rstrip("\n") + f"\n{replacement}\n"
+                    env_file.write_text(text, encoding="utf-8")
+                else:
+                    env_file.write_text(f"{key}={answer}\n", encoding="utf-8")
+                os.environ[key] = answer
+                return date_obj
+            except ValueError:
+                print("Ongeldige datum. Voer in als YYYY-MM-DD, bijv. 2026-02-12.")
+
+    start = _read_date("PORTFLOW_SEMESTER_START", "Op welke dag begint het semester")
+    end = _read_date("PORTFLOW_SEMESTER_END", "Wat is de laatste dag van het semester")
+    return start, end
+
+
+CURRENT_SEMESTER_START, CURRENT_SEMESTER_END = _load_semester_dates()
+print(f"Semester periode: {CURRENT_SEMESTER_START.strftime('%d-%m-%Y')} t/m {CURRENT_SEMESTER_END.strftime('%d-%m-%Y')}")
 
 GOALS = {
     "Overzicht creëren",
@@ -162,6 +213,16 @@ TRIBE_STUDENT_SEMESTER = {name: sem for name, _, sem, *_ in CURRENT_TRIBE_STUDEN
 TRIBE_STUDENT_TRIBE = {name: tribe for name, _, _sem, tribe, *_ in CURRENT_TRIBE_STUDENTS if tribe}
 TRIBE_STUDENT_GILDE = {name: gilde for name, _, _sem, _tribe, gilde in CURRENT_TRIBE_STUDENTS if gilde}
 
+# Gilde-brede lijst uit .env
+CURRENT_GILDE_STUDENTS = parse_coach_students(
+    os.getenv("PORTFLOW_GILDE_STUDENTS_JSON", "").strip()
+)
+GILDE_STUDENT_NAMES = {name for name, *_ in CURRENT_GILDE_STUDENTS}
+GILDE_STUDENT_START_DATES = {name: start for name, start, *_ in CURRENT_GILDE_STUDENTS if start is not None}
+GILDE_STUDENT_SEMESTER = {name: sem for name, _, sem, *_ in CURRENT_GILDE_STUDENTS if sem}
+GILDE_STUDENT_TRIBE = {name: tribe for name, _, _sem, tribe, *_ in CURRENT_GILDE_STUDENTS if tribe}
+GILDE_STUDENT_GILDE = {name: gilde for name, _, _sem, _tribe, gilde in CURRENT_GILDE_STUDENTS if gilde}
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -180,27 +241,27 @@ def parse_args():
         help="Log evaluatie-beslissingen (waarom wel/geen ?) naar pending_debug.json",
     )
     parser.add_argument(
-        "--semester",
-        choices=["1", "2", "3"],
-        default=None,
-        help="Semester scope: 1=huidig, 2=alles, 3=sep25-jan26",
-    )
-    parser.add_argument(
-        "--students",
-        choices=["1", "2", "3", "4"],
-        default=None,
-        help="Student ophaal methode: 1=shared collection, 2=section, 3=coach array, 4=tribe array",
-    )
-    parser.add_argument(
-        "--output",
-        choices=["1", "2", "3"],
-        default=None,
-        help="Output optie: 1=enkele student, 2=CSV export, 3=tabel",
-    )
-    parser.add_argument(
         "--anoniem",
         action="store_true",
         help="Vervang alle studentnamen door ******* in de uitvoer",
+    )
+    parser.add_argument(
+        "--vraagtekens",
+        choices=["1"],
+        default=None,
+        help="Toon openstaande (?) evaluaties: 1=tonen",
+    )
+    parser.add_argument(
+        "--aantal",
+        choices=["1", "meer"],
+        default=None,
+        help="Hoeveel studenten: 1=één student, meer=meerdere studenten",
+    )
+    parser.add_argument(
+        "--lijst",
+        choices=["alles", "coach", "tribe", "gilde"],
+        default=None,
+        help="Welke studentenlijst: alles=gedeeld, coach=mijn coach studenten, tribe=tribe, gilde=gilde",
     )
     return parser.parse_args()
 
@@ -340,15 +401,114 @@ def maybe_write_schema_report():
     print("Schema inventory exported to schema_inventory.txt")
 
 
-# ------------------------
-# Helper functions
-# ------------------------
+
+def _save_token_to_env(token: str) -> None:
+    """Schrijft de bearer token naar .env (vervangt een eventuele bestaande waarde)."""
+    env_path = Path(__file__).resolve().parent / ".env"
+    if env_path.exists():
+        content = env_path.read_text(encoding="utf-8")
+        if re.search(r"^PORTFLOW_BEARER_TOKEN=", content, flags=re.MULTILINE):
+            content = re.sub(
+                r"^PORTFLOW_BEARER_TOKEN=.*$",
+                f"PORTFLOW_BEARER_TOKEN={token}",
+                content,
+                flags=re.MULTILINE,
+            )
+        else:
+            content = f"PORTFLOW_BEARER_TOKEN={token}\n" + content
+    else:
+        content = f"PORTFLOW_BEARER_TOKEN={token}\n"
+    env_path.write_text(content, encoding="utf-8")
+    print("  Token opgeslagen in .env")
+
+
+def _jwt_is_valid(token: str) -> bool:
+    """Controleer of een JWT-token nog niet verlopen is op basis van de 'exp' claim."""
+    try:
+        import base64 as _b64
+        payload_b64 = token.split(".")[1]
+        padding = (4 - len(payload_b64) % 4) % 4
+        payload = json.loads(_b64.urlsafe_b64decode(payload_b64 + "=" * padding))
+        exp = payload.get("exp")
+        if exp is None:
+            return True  # geen exp claim → aannemen dat het geldig is
+        return time.time() < exp
+    except Exception:
+        return False  # bij twijfel → als verlopen beschouwen
+
+
+def _jwt_user_name(token: str) -> str | None:
+    """Haal de gebruikersnaam op uit het JWT-payload (name / sub / email)."""
+    try:
+        import base64 as _b64
+        payload_b64 = token.split(".")[1]
+        padding = (4 - len(payload_b64) % 4) % 4
+        payload = json.loads(_b64.urlsafe_b64decode(payload_b64 + "=" * padding))
+        for key in ("name", "full_name", "fullname", "display_name", "email"):
+            val = payload.get(key)
+            if val and isinstance(val, str) and val.strip():
+                return val.strip()
+        # Zoek recursief in geneste objecten
+        for val in payload.values():
+            if isinstance(val, dict):
+                for key in ("name", "full_name", "email"):
+                    v = val.get(key)
+                    if v and isinstance(v, str) and v.strip():
+                        return v.strip()
+    except Exception:
+        pass
+    return None
+
+
+OWN_PORTFOLIO_ID = os.getenv("PORTFLOW_OWN_PORTFOLIO_ID", "").strip()
+
+
+def _get_own_user_name(token: str) -> str | None:
+    """Haal de naam van de ingelogde gebruiker op via de eigen portfolio API."""
+    if not OWN_PORTFOLIO_ID:
+        return _jwt_user_name(token)
+    try:
+        headers = {"accept": "*/*", "authorization": f"Bearer {token}", "user-agent": "Mozilla/5.0"}
+        response = requests.get(
+            f"{BASE_URL}/portfolios/{OWN_PORTFOLIO_ID}",
+            headers=headers,
+            timeout=5,
+        )
+        if response.status_code == 200:
+            data = response.json()
+            user = data.get("user") or {}
+            name = user.get("name") or user.get("full_name") or user.get("email")
+            if name and isinstance(name, str) and name.strip():
+                return name.strip()
+    except Exception:
+        pass
+    return _jwt_user_name(token)
+
 
 def get_bearer_token(force_prompt: bool = False):
     token_from_var = (globals().get("BEARER_TOKEN") or "").strip()
+
+    # Stap 1: gebruik token uit .env als het nog geldig is
     if token_from_var and not force_prompt:
-        return token_from_var
-    return input("Enter Bearer token: ").strip()
+        if _jwt_is_valid(token_from_var):
+            print("Authentication bearer token opgehaald uit .env")
+            return token_from_var
+        print("Authentication bearer token uit .env is verouderd.")
+    elif token_from_var and force_prompt:
+        print("Authentication bearer token uit .env is verouderd.")
+
+    print()
+    print("Haal een nieuw token op via browser inspector → Network → filter op 'dashboard'")
+    print()
+    token = input("Plak bearer token: ").strip()
+    if not token:
+        raise SystemExit("Geen token opgegeven, script gestopt.")
+
+    save = input("Token opslaan in .env? [J/n] ").strip().lower()
+    if save in ("", "j", "y", "yes", "ja"):
+        _save_token_to_env(token)
+        globals()["BEARER_TOKEN"] = token
+    return token
 
 
 def get_section_id(force_prompt: bool = False) -> str:
@@ -408,22 +568,6 @@ def resolve_student_selection(selection: str, ordered_names: list[str], students
 
 
 def choose_semester_scope() -> str:
-    if ARGS.semester:
-        if ARGS.semester == "2":
-            return "all"
-        if ARGS.semester == "3":
-            return "sep25_jan26"
-        return "current"
-    print("\nVan welk semester wil je de evaluaties zien?")
-    print("1) Huidig semester (vanaf 3-feb-26) [standaard]")
-    print("2) Alle semesters")
-    print("3) Semester sep25 t/m jan26 (1-sep-2025 t/m 31-jan-2026)")
-
-    choice = input("Voer 1, 2 of 3 in (standaard 1): ").strip()
-    if choice == "2":
-        return "all"
-    if choice == "3":
-        return "sep25_jan26"
     return "current"
 
 def request_with_retries(url, headers, params=None, max_attempts=3):
@@ -1023,12 +1167,14 @@ def collect_results(
                 if details:
                     evaluation_text = f"{level} ({', '.join(details)})"
 
+                _ev_reviewer = ((evaluation or {}).get("reviewer") or {}).get("name")
                 results.append({
                     "student_name": student_name,
                     "goal_name": goal_name,
                     "evaluation": evaluation_text,
+                    "submitted_at_iso": evaluation_datetime.isoformat() if evaluation_datetime else None,
                     "pending_detail": {
-                        "reviewer": reviewer_name,
+                        "reviewer": _ev_reviewer or reviewer_name,
                         "date": evaluation_date,
                         "title": (evaluation or {}).get("review_request_title"),
                     } if is_pending else None,
@@ -1079,12 +1225,14 @@ def collect_results(
                     if _rid in reviewer_rids:
                         continue
                     _self_dt = resolve_evaluation_date(_sitem, _sev)
+                    _self_reviewer = (_sev.get("reviewer") or {}).get("name")
                     results.append({
                         "student_name": student_name,
                         "goal_name": goal_name,
                         "evaluation": "?",
+                        "submitted_at_iso": _self_dt.isoformat() if _self_dt else None,
                         "pending_detail": {
-                            "reviewer": None,
+                            "reviewer": _self_reviewer,
                             "date": format_short_date(_self_dt),
                             "title": _sev.get("review_request_title"),
                         },
@@ -1109,34 +1257,123 @@ def collect_results(
     return results
 
 
+def print_week_barchart(results, override_start=None):
+    import math as _math
+    from datetime import timedelta as _td
+    sem_start = override_start if override_start is not None else CURRENT_SEMESTER_START
+    sem_end   = CURRENT_SEMESTER_END
+
+    # Weeks needed to cover until semester end
+    num_weeks = _math.ceil(((sem_end - sem_start).days + 1) / 7)
+    if num_weeks <= 0:
+        return
+
+    _counted_levels = {"1", "2", "3", "?"}
+    counts = [0] * num_weeks
+    for r in results:
+        level = extract_level_short(r.get("evaluation", ""))
+        if level not in _counted_levels:
+            continue
+        raw = r.get("submitted_at_iso")
+        if not raw:
+            continue
+        dt = parse_datetime_value(raw)
+        if dt is None:
+            continue
+        d = dt.date() if isinstance(dt, datetime) else dt
+        if d < sem_start:
+            continue
+        week_idx = (d - sem_start).days // 7
+        if 0 <= week_idx < num_weeks:
+            counts[week_idx] += 1
+
+    if not any(c > 0 for c in counts):
+        return
+
+    max_count = max(counts)
+    COL_W = 5  # chars per week column: " ██  " or "     "
+
+    # Y-axis label width: digits + 1 space before │
+    y_w = len(str(max_count)) + 1
+
+    # Week start dates (Monday of each week from sem_start)
+    week_starts = [sem_start + _td(days=7 * i) for i in range(num_weeks)]
+
+    # Alignment helpers
+    #   bar rows:   "{y_w chars} │{bar data}"  → bars start at col y_w+2
+    #   axis:       "{y_w+1 spaces}╠{'═'*...}╣"
+    #   week/date:  "{y_w+2 spaces}{labels}"
+    axis_prefix  = " " * (y_w + 1)
+    label_prefix = " " * (y_w + 2)
+
+    print()
+
+    # Bar rows from max_count down to 1
+    for row_val in range(max_count, 0, -1):
+        y_label = f"{row_val:>{y_w}} │"
+        row = "".join(" ██  " if c >= row_val else "     " for c in counts)
+        print(y_label + row)
+
+    # X-axis
+    print(f"{axis_prefix}╠{'═' * (num_weeks * COL_W)}╣")
+
+    # Week number labels: W1, W2, ... W21
+    print(label_prefix + "".join(f"W{i + 1:<{COL_W - 1}}" for i in range(num_weeks)))
+
+    # Date labels: day/month of the Monday of each week
+    print(label_prefix + "".join(f"{ws.day}/{ws.month:<{COL_W - len(str(ws.day)) - 1}}" for ws in week_starts))
+
+
 def print_student_evaluations(token, student_name, student_data, semester_scope="current", override_start=None):
-    results = collect_results(token, student_name, student_data, semester_scope, override_start=override_start, include_ungraded=True)
+    results = collect_results(token, student_name, student_data, semester_scope, override_start=override_start, include_ungraded=bool(ARGS.vraagtekens))
     if results == "TOKEN_EXPIRED":
         return "TOKEN_EXPIRED"
 
     print(f"\n{student_name}")
-    goals: dict = {}
+
+    # Splits in behaald en ingediend (pending)
+    achieved: dict = {}   # goal -> list of formatted strings
+    pending: dict = {}    # goal -> list of formatted strings
+
     for r in results:
-        goals.setdefault(r["goal_name"], []).append(r)
+        goal = r["goal_name"]
+        ev = r["evaluation"]
+        pd = r.get("pending_detail")
 
-    for goal, result_list in goals.items():
-        parts = []
-        for r in result_list:
-            ev = r["evaluation"]
-            pd = r.get("pending_detail")
-            if ev == "?" and pd:
-                reviewer = pd.get("reviewer")
-                date = pd.get("date")
-                title = pd.get("title")
-                if reviewer and date:
-                    ev = f"? (Ingediend bij: {reviewer}, {date})"
-                elif date and title:
-                    ev = f"? (Ingediend: {date} — {title})"
-                elif date:
-                    ev = f"? (Ingediend: {date})"
-            parts.append(ev)
-        print(f"{goal}: {', '.join(parts)}")
+        if ev == "?" and pd:
+            reviewer = pd.get("reviewer")
+            date = pd.get("date")
+            title = pd.get("title")
+            initials = name_to_initials(reviewer) if reviewer else ""
+            parts = []
+            if initials:
+                parts.append(initials)
+            if date:
+                parts.append(date)
+            if title:
+                short_title = title[:27] + "…" if len(title) > 28 else title
+                parts.append(f'"{short_title}"')
+            detail = ", ".join(parts) if parts else ""
+            pending.setdefault(goal, []).append(f"? ({detail})" if detail else "?")
+        else:
+            achieved.setdefault(goal, []).append(ev)
 
+    if achieved:
+        print("\nBehaalde evaluaties:")
+        for goal, parts in achieved.items():
+            print(f"  {goal}: {', '.join(parts)}")
+    else:
+        print("\nBehaalde evaluaties: (geen)")
+
+    if ARGS.vraagtekens:
+        if pending:
+            print("\nIngediende evaluaties (nog niet beoordeeld):")
+            for goal, parts in pending.items():
+                print(f"  {goal}: {', '.join(parts)}")
+        else:
+            print("\nIngediende evaluaties (nog niet beoordeeld): (geen)")
+
+    print_week_barchart(results, override_start=override_start)
     return "OK"
 
 # ------------------------
@@ -1158,6 +1395,25 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
     _sem_map = sem_map if sem_map is not None else COACH_STUDENT_SEMESTER
     _tribe_map = tribe_map if tribe_map is not None else COACH_STUDENT_TRIBE
     _gilde_map = gilde_map if gilde_map is not None else COACH_STUDENT_GILDE
+
+    # Achtergrondkleuren per groep (24-bit ANSI, passend bij de Open ICT kleurkaart)
+    _BG_BLUE  = "\033[48;2;119;140;163m"   # blauw-grijs  (OC, KO, JKO, KPM)
+    _BG_GREEN = "\033[48;2;141;164;122m"   # salie-groen  (PL, BD, SW)
+    _BG_TERRA = "\033[48;2;190;145;110m"   # terra-cotta  (FO, PH, RE)
+    _RESET    = "\033[0m"
+
+    _GOAL_BG = {
+        "Overzicht creëren":           _BG_BLUE,
+        "Kritisch oordelen":           _BG_BLUE,
+        "Juiste kennis ontwikkelen":   _BG_BLUE,
+        "Kwalitatief Product Maken":   _BG_BLUE,
+        "Plannen":                     _BG_GREEN,
+        "Boodschap Delen":             _BG_GREEN,
+        "Samenwerken":                 _BG_GREEN,
+        "Flexibel opstellen":          _BG_TERRA,
+        "Pro-actief handelen":         _BG_TERRA,
+        "Reflecteren":                 _BG_TERRA,
+    }
 
     # Build student -> goal -> list of short levels
     student_goals = {}
@@ -1187,22 +1443,32 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
     tribe_width = max(len("Tribe"), max((len(_tribe_map.get(s, "")) for s in student_goals), default=0))
     gilde_width = max(len("Gilde"), max((len(_gilde_map.get(s, "")) for s in student_goals), default=0))
 
-    # Header
-    header = f"{'Naam':<{name_width}}"
+    # Bereken visuele breedte voor de scheidingslijn (zonder ANSI-codes)
+    _plain_header = f"{'Naam':<{name_width}}"
     for (_, abbrev), w in zip(GOAL_COLUMNS, col_widths):
-        header += f" | {abbrev:<{w}}"
+        _plain_header += f" | {abbrev:<{w}}"
+    _plain_header += f" | {'Tribe':<{tribe_width}}"
+    _plain_header += f" | {'Semester':<{sem_width}}"
+    _plain_header += f" | {'Gilde':<{gilde_width}}"
+    separator = "-" * len(_plain_header)
+
+    # Gekleurde header
+    header = f"{'Naam':<{name_width}}"
+    for (full_name, abbrev), w in zip(GOAL_COLUMNS, col_widths):
+        bg = _GOAL_BG[full_name]
+        header += f" | {bg}{abbrev:<{w}}{_RESET}"
     header += f" | {'Tribe':<{tribe_width}}"
     header += f" | {'Semester':<{sem_width}}"
     header += f" | {'Gilde':<{gilde_width}}"
     print()
     print(header)
-    print("-" * len(header))
+    print(separator)
 
     # Rows (in .env order if available, otherwise alphabetical)
     row_order = all_names if all_names else sorted(student_goals.keys())
     for student_name in row_order:
         if student_name == SEPARATOR_SENTINEL:
-            print("-" * len(header))
+            print(separator)
             continue
         if student_name not in student_goals:
             continue
@@ -1212,15 +1478,19 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
         sem = f"Semester {sem_raw}" if sem_raw else ""
         tribe = _tribe_map.get(student_name, "")
         gilde = _gilde_map.get(student_name, "")
+        display_tribe = "******" if ARGS.anoniem else tribe
+        display_sem = "******" if ARGS.anoniem else sem
+        display_gilde = "******" if ARGS.anoniem else gilde
 
         # Inaccessible student: portfolio niet zichtbaar voor deze coach
         if inaccessible_names and student_name in inaccessible_names:
             row = f"\033[2m{display_name:<{name_width}}\033[0m"
-            for (_, __), w in zip(GOAL_COLUMNS, col_widths):
-                row += f" | \033[2m{'n/b':<{w}}\033[0m" if w >= 3 else f" | \033[2m{'-':<{w}}\033[0m"
-            row += f" | \033[2m{tribe:<{tribe_width}}\033[0m"
-            row += f" | \033[2m{sem:<{sem_width}}\033[0m"
-            row += f" | \033[2m{gilde:<{gilde_width}}\033[0m"
+            for (full_name, _), w in zip(GOAL_COLUMNS, col_widths):
+                bg = _GOAL_BG[full_name]
+                row += f" | \033[2m{bg}{'n/b' if w >= 3 else '-':<{w}}{_RESET}\033[0m"
+            row += f" | \033[2m{display_tribe:<{tribe_width}}\033[0m"
+            row += f" | \033[2m{display_sem:<{sem_width}}\033[0m"
+            row += f" | \033[2m{display_gilde:<{gilde_width}}\033[0m"
             print(row)
             continue
 
@@ -1233,17 +1503,20 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
         row = f"{display_name:<{name_width}}"
         for (full_name, _), w in zip(GOAL_COLUMNS, col_widths):
             cell = ", ".join(goals.get(full_name, []))
+            bg = _GOAL_BG[full_name]
             if _alert and full_name in _alert_goals and not cell:
                 row += f" | \033[41m{' ' * w}\033[0m"
             elif _soft_all and full_name in _soft_goals and not cell:
                 row += f" | \033[43m{' ' * w}\033[0m"
             elif _soft_most and full_name in _soft_goals and not cell:
                 row += f" | \033[33m{' ' * w}\033[0m"
+            elif "?" in cell:
+                row += f" | \033[104m{cell:<{w}}\033[0m"
             else:
-                row += f" | {cell:<{w}}"
-        row += f" | {tribe:<{tribe_width}}"
-        row += f" | {sem:<{sem_width}}"
-        row += f" | {gilde:<{gilde_width}}"
+                row += f" | {bg}{cell:<{w}}{_RESET}"
+        row += f" | {display_tribe:<{tribe_width}}"
+        row += f" | {display_sem:<{sem_width}}"
+        row += f" | {display_gilde:<{gilde_width}}"
         print(row)
 
     if inaccessible_names and any(n in inaccessible_names for n in (all_names or []) if n != SEPARATOR_SENTINEL):
@@ -1288,178 +1561,339 @@ def _show_progress(current: int, total: int, label: str, bar_width: int = 25) ->
     filled = int(bar_width * current / total)
     arrow = ">" if filled < bar_width else "="
     bar = "=" * filled + arrow + " " * (bar_width - filled - 1)
-    print(f"\r[{bar}] {current}/{total}  {label:<40}", end="", flush=True)
+    display_label = "" if current == total else label
+    print(f"\r[{bar}] {current}/{total}  {display_label:<40}", end="", flush=True)
+
+
+def _fetch_shared(token):
+    """Haal alle gedeelde studenten op; herhaalt bij token-expiry."""
+    while True:
+        shared_items = get_shared_collections(token)
+        if shared_items == "TOKEN_EXPIRED":
+            print("Token verlopen, nieuw token ophalen...")
+            token = get_bearer_token(force_prompt=True)
+            continue
+        return extract_students(shared_items), token
 
 
 try:
-    _cli_mode = bool(ARGS.semester and ARGS.students and ARGS.output)
-    if _cli_mode:
-        print(f"Voortgang portflow {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
     while True:
         semester_scope = choose_semester_scope()
         token = get_bearer_token()
+        _user = _get_own_user_name(token)
+        if _user:
+            print(f"Ingelogd als: {_user}")
 
-        while True:
-            fetch_mode = None
-            if not _cli_mode:
-                print("\nChoose student fetching method:")
-                print("1) All students with shared collection")
-                print("2) Students from section (coachingsdashboard)")
-                print("3) Huidige coach studenten volgens array")
-                print("4) Tribe studenten (coach + collega's) volgens array")
-            fetch_choice = (ARGS.students or input("Enter 1, 2, 3 or 4 (or 'q' to quit): ").strip())
+        # ── Stap 1: hoeveel studenten? ────────────────────────────────────────────────
+        _HL = "\033[48;2;100;160;220m\033[1m"   # lichtblauw + bold
+        _RS = "\033[0m"
+        _pre_qty = ({"1": "1", "meer": "2"}.get(ARGS.aantal) if ARGS.aantal else None)
+        _opt1 = f"{_HL}  1) Één student       {_RS}" if _pre_qty == "1"   else "  1) Één student"
+        _opt2 = f"{_HL}  2) Meerdere studenten{_RS}" if _pre_qty == "2"   else "  2) Meerdere studenten"
+        print("\nVoor hoeveel studenten wil je de evaluaties zien? (commandline: --aantal 1  of  --aantal meer)")
+        print(_opt1)
+        print(_opt2)
+        if _pre_qty:
+            qty = _pre_qty
+        else:
+            qty = input("Keuze (of 'q' om te stoppen): ").strip()
+            if qty in ("1", "2"):
+                # Ga terug: wis de inputregel + de 2 opties + de vraagregel (4 regels)
+                print(f"\033[4A\033[J", end="")
+                _opt1h = f"{_HL}  1) Één student       {_RS}" if qty == "1" else "  1) Één student"
+                _opt2h = f"{_HL}  2) Meerdere studenten{_RS}" if qty == "2" else "  2) Meerdere studenten"
+                print("Voor hoeveel studenten wil je de evaluaties zien? (commandline: --aantal 1  of  --aantal meer)")
+                print(_opt1h)
+                print(_opt2h)
+        if qty.lower() == "q":
+            print("Exiting gracefully. Goodbye!")
+            exit()
+        if qty not in ("1", "2"):
+            print("Ongeldige keuze, probeer opnieuw.")
+            continue
 
-            if fetch_choice.lower() == "q":
-                print("Exiting gracefully. Goodbye!")
-                exit()
+        # ── Stap 2a: één student ─────────────────────────────────────────────────────
+        if qty == "1":
+            options: list[tuple[str, str]] = [
+                ("shared", "Kies een student uit een lijst van alle studenten die hun portfolio met mij hebben gedeeld"),
+            ]
+            if COACH_STUDENT_NAMES - {SEPARATOR_SENTINEL}:
+                options.append(("coach", "Kies een student uit een lijst van al mijn coach studenten (uit .env)"))
+            if TRIBE_STUDENT_NAMES - {SEPARATOR_SENTINEL}:
+                options.append(("tribe", "Kies een student uit een lijst van studenten in mijn tribe (uit .env)"))
+            if GILDE_STUDENT_NAMES - {SEPARATOR_SENTINEL}:
+                options.append(("gilde", "Kies een student uit een lijst van studenten in mijn gilde (uit .env)"))
+            options.append(("naam", "Voer de voornaam in van de gezochte student"))
 
-            if fetch_choice == "1":
-                shared_items = get_shared_collections(token)
-                if shared_items == "TOKEN_EXPIRED":
-                    print("Token expired, please enter a new one.")
-                    token = get_bearer_token(force_prompt=True)
-                    continue
-                students = extract_students(shared_items)
-                fetch_mode = "1"
-                break
+            _lijst_source_map = {"alles": "shared", "coach": "coach", "tribe": "tribe", "gilde": "gilde"}
+            _pre_source = _lijst_source_map.get(ARGS.lijst) if ARGS.lijst else None
+            _pre_sub = next((str(i) for i, (k, _) in enumerate(options, 1) if k == _pre_source), None)
 
-            elif fetch_choice == "2":
-                section_id = get_section_id()
-                students = get_students_from_section(token, section_id)
-                if students == "TOKEN_EXPIRED":
-                    print("Token expired, please enter a new one.")
-                    token = get_bearer_token(force_prompt=True)
-                    continue
-                fetch_mode = "2"
-                break
+            def _print_lijst_menu(highlight_idx):
+                print("\nWelke student?")
+                for i, (_, label) in enumerate(options, start=1):
+                    if str(i) == highlight_idx:
+                        print(f"{_HL}  {i}) {label}{_RS}")
+                    else:
+                        print(f"  {i}) {label}")
 
-            elif fetch_choice == "3":
-                shared_items = get_shared_collections(token)
-                if shared_items == "TOKEN_EXPIRED":
-                    print("Token expired, please enter a new one.")
-                    token = get_bearer_token(force_prompt=True)
-                    continue
-                all_students = extract_students(shared_items)
-                students = {
-                    name: data
-                    for name, data in all_students.items()
-                    if name in COACH_STUDENT_NAMES
-                }
-                missing_names = [
-                    name for name in COACH_STUDENT_NAMES
-                    if name != SEPARATOR_SENTINEL and name not in all_students
-                ]
-                if missing_names:
-                    print("These coach students were not found in shared collections:")
-                    for missing_name in missing_names:
-                        print(f"  - {missing_name}")
-                fetch_mode = "3"
-                break
+            _print_lijst_menu(_pre_sub)
 
-            elif fetch_choice == "4":
-                shared_items = get_shared_collections(token)
-                if shared_items == "TOKEN_EXPIRED":
-                    print("Token expired, please enter a new one.")
-                    token = get_bearer_token(force_prompt=True)
-                    continue
-                all_students = extract_students(shared_items)
-                students = {
-                    name: data
-                    for name, data in all_students.items()
-                    if name in TRIBE_STUDENT_NAMES
-                }
-                # Students in the tribe list but not in shared collections are marked
-                # inaccessible later in output option 3; no warning needed here.
-                fetch_mode = "4"
-                break
-
+            if _pre_sub:
+                sub = _pre_sub
             else:
-                print("Invalid option, try again.")
+                sub = input("Keuze: ").strip()
+                if sub.isdigit() and 1 <= int(sub) <= len(options):
+                    print(f"\033[{len(options) + 2}A\033[J", end="")
+                    _print_lijst_menu(sub)
 
-        if not students:
-            print("No students found.")
-            continue
+            if not sub.isdigit() or not (1 <= int(sub) <= len(options)):
+                print("Ongeldige keuze.")
+                continue
+            source = options[int(sub) - 1][0]
 
-        env_order = [
-            name for name, *_ in (CURRENT_TRIBE_STUDENTS if fetch_mode == "4" else CURRENT_COACH_STUDENTS)
-        ]
-        ordered_names, number_width = student_order_and_width(students, preferred_order=env_order)
+            if source == "naam":
+                voornaam = input("Voer de voornaam in: ").strip().lower()
+                if not voornaam:
+                    print("Geen naam ingevoerd.")
+                    continue
+                all_students, token = _fetch_shared(token)
+                students = {n: d for n, d in all_students.items() if n.strip().split()[0].lower() == voornaam}
+                if not students:
+                    students = {n: d for n, d in all_students.items() if voornaam in n.lower()}
+                env_order = None
+                start_dates: dict = {}
+            elif source == "shared":
+                students, token = _fetch_shared(token)
+                env_order = None
+                start_dates = {}
+            elif source == "coach":
+                all_students, token = _fetch_shared(token)
+                students = {n: d for n, d in all_students.items() if n in COACH_STUDENT_NAMES}
+                env_order = [name for name, *_ in CURRENT_COACH_STUDENTS if name != SEPARATOR_SENTINEL]
+                start_dates = COACH_STUDENT_START_DATES
+            elif source == "tribe":
+                all_students, token = _fetch_shared(token)
+                students = {n: d for n, d in all_students.items() if n in TRIBE_STUDENT_NAMES}
+                env_order = [name for name, *_ in CURRENT_TRIBE_STUDENTS if name != SEPARATOR_SENTINEL]
+                start_dates = TRIBE_STUDENT_START_DATES
+            else:  # gilde
+                all_students, token = _fetch_shared(token)
+                students = {n: d for n, d in all_students.items() if n in GILDE_STUDENT_NAMES}
+                env_order = [name for name, *_ in CURRENT_GILDE_STUDENTS if name != SEPARATOR_SENTINEL]
+                start_dates = GILDE_STUDENT_START_DATES
 
-        if not _cli_mode:
-            print("\nStudents:")
-            for idx, name in enumerate(ordered_names, start=1):
-                print(f"- {idx:0{number_width}d} - {name}")
-
-            print("\nChoose output option:")
-            print("1) Single student")
-            print("2) All students (export to CSV)")
-            print("3) Weergeven als tabel")
-            print("99) Enter student name or id")
-
-        choice = (ARGS.output or input(
-            "Enter 1, 2, 3, 99, a student number/name (or 'm' for main menu): "
-        ).strip())
-
-        if choice.lower() == "m":
-            continue
-
-        if choice == "1":
-            selection = input(
-                "Enter student number (e.g. 01) or exact name as shown: "
-            ).strip()
-            name = resolve_student_selection(selection, ordered_names, students)
-            if not name:
-                print("Student not found (use number or exact name).")
+            if not students:
+                print("Geen studenten gevonden.")
                 continue
 
-            status = print_student_evaluations(token, name, students[name], semester_scope, override_start=COACH_STUDENT_START_DATES.get(name))
+            ordered_names, number_width = student_order_and_width(students, preferred_order=env_order)
+
+            # Bepaal tribe per student (vanuit de gekozen bronlijst)
+            _tribe_src = (
+                COACH_STUDENT_TRIBE if source == "coach"
+                else TRIBE_STUDENT_TRIBE if source == "tribe"
+                else GILDE_STUDENT_TRIBE if source == "gilde"
+                else {}
+            )
+
+            # Groepeer per tribe (volgorde van eerste optreden bewaren)
+            _tribe_groups: dict[str, list[tuple[int, str]]] = {}
+            _global_idx = 1
+            for sname in ordered_names:
+                tribe_key = _tribe_src.get(sname, "")
+                _tribe_groups.setdefault(tribe_key, []).append((_global_idx, sname))
+                _global_idx += 1
+
+            tribes = list(_tribe_groups.keys())
+            _all_same_tribe = len(tribes) == 1
+
+            if _all_same_tribe:
+                # Gewone meerkolomsindeling
+                _col_w = max(len(f"  {idx:0{number_width}d}) {n}") for idx, n in enumerate(ordered_names, 1)) + 2
+                _cols = max(1, 80 // _col_w)
+            else:
+                # Per-tribe kolombreedte (afgestemd op de langste naam binnen die tribe)
+                _tribe_col_w: dict[str, int] = {}
+                for t in tribes:
+                    grp = _tribe_groups[t]
+                    _tribe_col_w[t] = max(
+                        max(len(f"{idx:0{number_width}d}) {n}") for idx, n in grp),
+                        len(t),
+                    ) + 2  # 2 padding
+
+                # Greedy batching: voeg tribes toe aan huidige batch zolang totale breedte ≤ 80
+                # (2 spaties inspringing + kolombreedte per tribe)
+                tribe_batches: list[list[str]] = []
+                current_batch: list[str] = []
+                current_width = 2  # de vaste "  " inspringing
+                for t in tribes:
+                    tw = _tribe_col_w[t]
+                    if current_batch and current_width + tw > 80:
+                        tribe_batches.append(current_batch)
+                        current_batch = [t]
+                        current_width = 2 + tw
+                    else:
+                        current_batch.append(t)
+                        current_width += tw
+                if current_batch:
+                    tribe_batches.append(current_batch)
+
+            def _print_student_list(highlight_name=None):
+                print("\nStudenten:")
+                if _all_same_tribe:
+                    for i, (idx, sname) in enumerate(list(_tribe_groups.values())[0], start=0):
+                        entry = f"  {idx:0{number_width}d}) {sname}"
+                        padded = f"{entry:<{_col_w}}"
+                        display = f"{_HL}{entry}{_RS}{' ' * (_col_w - len(entry))}" if highlight_name and sname == highlight_name else padded
+                        end = "\n" if (i + 1) % _cols == 0 or idx == len(ordered_names) else ""
+                        print(display, end=end)
+                    if len(ordered_names) % _cols != 0:
+                        print()
+                else:
+                    for batch in tribe_batches:
+                        # Header
+                        header = "  " + "".join(f"{t:<{_tribe_col_w[t]}}" for t in batch)
+                        print(header.rstrip())
+                        print(("  " + "".join(f"{'-' * len(t):<{_tribe_col_w[t]}}" for t in batch)).rstrip())
+                        # Rijen
+                        max_rows = max(len(_tribe_groups[t]) for t in batch)
+                        for row in range(max_rows):
+                            line = "  "
+                            for t in batch:
+                                grp = _tribe_groups[t]
+                                if row < len(grp):
+                                    idx, sname = grp[row]
+                                    cell = f"{idx:0{number_width}d}) {sname}"
+                                    padded = f"{cell:<{_tribe_col_w[t]}}"
+                                    cell_out = f"{_HL}{cell}{_RS}{' ' * (_tribe_col_w[t] - len(cell))}" if highlight_name and sname == highlight_name else padded
+                                else:
+                                    cell_out = " " * _tribe_col_w[t]
+                                line += cell_out
+                            print(line.rstrip())
+                        print()
+
+            if _all_same_tribe:
+                _list_lines = 2 + (len(ordered_names) + _cols - 1) // _cols + (1 if len(ordered_names) % _cols != 0 else 0)
+            else:
+                _list_lines = 2 + sum(max(len(_tribe_groups[t]) for t in batch) + 3 for batch in tribe_batches)
+
+            _print_student_list()
+
+            selection = input("Kies een student (nummer of naam): ").strip()
+            name = resolve_student_selection(selection, ordered_names, students)
+            if name and selection.isdigit():
+                print(f"\033[{_list_lines + 1}A\033[J", end="")
+                _print_student_list(highlight_name=name)
+                print(f"Kies een student (nummer of naam): {selection}")
+            if not name:
+                print("Student niet gevonden.")
+                continue
+
+            # Tabel met één rij
+            override = start_dates.get(name)
+            _single_results = collect_results(token, name, students[name], semester_scope, override_start=override, include_ungraded=bool(ARGS.vraagtekens))
+            if _single_results == "TOKEN_EXPIRED":
+                print("Token verlopen, terug naar hoofdmenu.")
+                continue
+            _sem_map_s = COACH_STUDENT_SEMESTER if source == "coach" else (TRIBE_STUDENT_SEMESTER if source == "tribe" else (GILDE_STUDENT_SEMESTER if source == "gilde" else {}))
+            _tribe_map_s = COACH_STUDENT_TRIBE if source == "coach" else (TRIBE_STUDENT_TRIBE if source == "tribe" else (GILDE_STUDENT_TRIBE if source == "gilde" else {}))
+            _gilde_map_s = COACH_STUDENT_GILDE if source == "coach" else (TRIBE_STUDENT_GILDE if source == "tribe" else (GILDE_STUDENT_GILDE if source == "gilde" else {}))
+            print_coach_table(_single_results, all_names=[name], sem_map=_sem_map_s, tribe_map=_tribe_map_s, gilde_map=_gilde_map_s)
+
+            # Gedetailleerde tekstoutput onder de tabel
+            status = print_student_evaluations(token, name, students[name], semester_scope, override_start=override)
             if status == "TOKEN_EXPIRED":
-                print("Token expired, returning to main menu.")
+                print("Token verlopen, terug naar hoofdmenu.")
                 continue
             maybe_write_schema_report()
             maybe_write_pending_debug_report()
 
-        elif choice == "99":
-            selection = input(
-                "Enter student number (e.g. 13 or 02) or exact name as shown: "
-            ).strip()
-            name = resolve_student_selection(selection, ordered_names, students)
-            if not name:
-                print("Student not found (use number or exact name).")
-                continue
+        # ── Stap 2b: meerdere studenten ────────────────────────────────────────────
+        else:
+            options = [
+                ("shared", "Toon een tabel met alle studenten die hun portfolio met mij hebben gedeeld"),
+            ]
+            if COACH_STUDENT_NAMES - {SEPARATOR_SENTINEL}:
+                options.append(("coach", "Toon een tabel met al mijn coach studenten (uit .env)"))
+            if TRIBE_STUDENT_NAMES - {SEPARATOR_SENTINEL}:
+                options.append(("tribe", "Toon een tabel met alle studenten in mijn tribe (uit .env)"))
+            if GILDE_STUDENT_NAMES - {SEPARATOR_SENTINEL}:
+                options.append(("gilde", "Toon een tabel met alle studenten in mijn gilde (uit .env)"))
 
-            status = print_student_evaluations(token, name, students[name], semester_scope, override_start=COACH_STUDENT_START_DATES.get(name))
-            if status == "TOKEN_EXPIRED":
-                print("Token expired, returning to main menu.")
-                continue
-            maybe_write_schema_report()
-            maybe_write_pending_debug_report()
+            _lijst_source_map2 = {"alles": "shared", "coach": "coach", "tribe": "tribe", "gilde": "gilde"}
+            _pre_source2 = _lijst_source_map2.get(ARGS.lijst) if ARGS.lijst else None
+            _pre_sub2 = next((str(i) for i, (k, _) in enumerate(options, 1) if k == _pre_source2), None)
 
-        elif choice == "2":
-            all_results = []
-            total_students = len(ordered_names)
-            for idx, name in enumerate(ordered_names, start=1):
-                _show_progress(idx, total_students, name)
-                res = collect_results(token, name, students[name], semester_scope, override_start=COACH_STUDENT_START_DATES.get(name))
-                if res == "TOKEN_EXPIRED":
+            def _print_groep_menu(highlight_idx):
+                print("\nWelke groep studenten?")
+                for i, (_, label) in enumerate(options, start=1):
+                    if str(i) == highlight_idx:
+                        print(f"{_HL}  {i}) {label}{_RS}")
+                    else:
+                        print(f"  {i}) {label}")
+
+            _print_groep_menu(_pre_sub2)
+
+            if _pre_sub2:
+                sub = _pre_sub2
+            else:
+                sub = input("Keuze: ").strip()
+                if sub.isdigit() and 1 <= int(sub) <= len(options):
+                    print(f"\033[{len(options) + 2}A\033[J", end="")
+                    _print_groep_menu(sub)
+
+            if not sub.isdigit() or not (1 <= int(sub) <= len(options)):
+                print("Ongeldige keuze.")
+                continue
+            source = options[int(sub) - 1][0]
+
+            all_students, token = _fetch_shared(token)
+
+            if source == "shared":
+                names_list = sorted(all_students.keys())
+                students = all_students
+                inaccessible: set = set()
+                all_results = []
+                for idx, name in enumerate(names_list, start=1):
+                    _show_progress(idx, len(names_list), name)
+                    res = collect_results(token, name, students[name], semester_scope, include_ungraded=bool(ARGS.vraagtekens), inaccessible_names=inaccessible)
+                    if res == "TOKEN_EXPIRED":
+                        print()
+                        print("Token verlopen, terug naar hoofdmenu.")
+                        break
+                    all_results.extend(res)
+                else:
                     print()
-                    print("Token expired, returning to main menu.")
-                    break
-                all_results.extend(res)
-            else:
-                print()
-                export_csv_wide(all_results)
-                maybe_write_schema_report()
-                maybe_write_pending_debug_report()
+                    print_coach_table(all_results, all_names=names_list, inaccessible_names=inaccessible)
+                    maybe_write_schema_report()
+                    maybe_write_pending_debug_report()
 
-        elif choice == "3":
-            if fetch_mode == "4":
-                # Tribe tabel: inclusief inaccessible studenten van collega's
+            elif source == "coach":
+                students = {n: d for n, d in all_students.items() if n in COACH_STUDENT_NAMES}
+                coach_names_list = [name for name, *_ in CURRENT_COACH_STUDENTS]
+                real_names = [n for n in coach_names_list if n != SEPARATOR_SENTINEL]
+                all_results = []
+                for idx, name in enumerate(real_names, start=1):
+                    if name not in students:
+                        continue
+                    _show_progress(idx, len(real_names), name)
+                    res = collect_results(token, name, students[name], semester_scope, override_start=COACH_STUDENT_START_DATES.get(name), include_ungraded=bool(ARGS.vraagtekens))
+                    if res == "TOKEN_EXPIRED":
+                        print()
+                        print("Token verlopen, terug naar hoofdmenu.")
+                        break
+                    all_results.extend(res)
+                else:
+                    print()
+                    print_coach_table(all_results, all_names=coach_names_list, sem_map=COACH_STUDENT_SEMESTER, tribe_map=COACH_STUDENT_TRIBE, gilde_map=COACH_STUDENT_GILDE)
+                    maybe_write_schema_report()
+                    maybe_write_pending_debug_report()
+
+            elif source == "tribe":
+                students = {n: d for n, d in all_students.items() if n in TRIBE_STUDENT_NAMES}
                 tribe_names_list = [name for name, *_ in CURRENT_TRIBE_STUDENTS]
                 real_tribe_names = [n for n in tribe_names_list if n != SEPARATOR_SENTINEL]
-                if not real_tribe_names:
-                    print("Geen tribe studenten geconfigureerd (PORTFLOW_TRIBE_STUDENTS_JSON).")
-                    continue
                 inaccessible = set()
                 all_results = []
                 for idx, name in enumerate(real_tribe_names, start=1):
@@ -1467,71 +1901,40 @@ try:
                     if name not in students:
                         inaccessible.add(name)
                         continue
-                    override = TRIBE_STUDENT_START_DATES.get(name)
-                    res = collect_results(
-                        token, name, students[name], semester_scope,
-                        override_start=override, include_ungraded=True,
-                        inaccessible_names=inaccessible,
-                    )
+                    res = collect_results(token, name, students[name], semester_scope, override_start=TRIBE_STUDENT_START_DATES.get(name), include_ungraded=bool(ARGS.vraagtekens), inaccessible_names=inaccessible)
                     if res == "TOKEN_EXPIRED":
                         print()
-                        print("Token expired, returning to main menu.")
+                        print("Token verlopen, terug naar hoofdmenu.")
                         break
                     all_results.extend(res)
                 else:
                     print()
-                    print_coach_table(
-                        all_results,
-                        all_names=tribe_names_list,
-                        inaccessible_names=inaccessible,
-                        sem_map=TRIBE_STUDENT_SEMESTER,
-                        tribe_map=TRIBE_STUDENT_TRIBE,
-                        gilde_map=TRIBE_STUDENT_GILDE,
-                    )
+                    print_coach_table(all_results, all_names=tribe_names_list, inaccessible_names=inaccessible, sem_map=TRIBE_STUDENT_SEMESTER, tribe_map=TRIBE_STUDENT_TRIBE, gilde_map=TRIBE_STUDENT_GILDE)
                     maybe_write_schema_report()
                     maybe_write_pending_debug_report()
-            else:
-                # Coach tabel (fetch methode 1/2/3)
-                coach_names = [
-                    name for name, *_ in CURRENT_COACH_STUDENTS
-                    if name == SEPARATOR_SENTINEL or name in students
-                ]
-                if not coach_names:
-                    print("No coach students found in current student list.")
-                    continue
+
+            else:  # gilde
+                students = {n: d for n, d in all_students.items() if n in GILDE_STUDENT_NAMES}
+                gilde_names_list = [name for name, *_ in CURRENT_GILDE_STUDENTS]
+                real_gilde_names = [n for n in gilde_names_list if n != SEPARATOR_SENTINEL]
+                inaccessible = set()
                 all_results = []
-                real_names = [n for n in coach_names if n != SEPARATOR_SENTINEL]
-                for idx, name in enumerate(real_names, start=1):
-                    override = COACH_STUDENT_START_DATES.get(name)
-                    _show_progress(idx, len(real_names), name)
-                    res = collect_results(
-                        token, name, students[name], semester_scope,
-                        override_start=override, include_ungraded=True,
-                    )
+                for idx, name in enumerate(real_gilde_names, start=1):
+                    _show_progress(idx, len(real_gilde_names), name)
+                    if name not in students:
+                        inaccessible.add(name)
+                        continue
+                    res = collect_results(token, name, students[name], semester_scope, override_start=GILDE_STUDENT_START_DATES.get(name), include_ungraded=bool(ARGS.vraagtekens), inaccessible_names=inaccessible)
                     if res == "TOKEN_EXPIRED":
                         print()
-                        print("Token expired, returning to main menu.")
+                        print("Token verlopen, terug naar hoofdmenu.")
                         break
                     all_results.extend(res)
                 else:
                     print()
-                    print_coach_table(all_results, all_names=coach_names)
+                    print_coach_table(all_results, all_names=gilde_names_list, inaccessible_names=inaccessible, sem_map=GILDE_STUDENT_SEMESTER, tribe_map=GILDE_STUDENT_TRIBE, gilde_map=GILDE_STUDENT_GILDE)
                     maybe_write_schema_report()
                     maybe_write_pending_debug_report()
-
-        else:
-            # Shortcut: allow entering a student number or exact name directly.
-            name = resolve_student_selection(choice, ordered_names, students)
-            if name:
-                status = print_student_evaluations(token, name, students[name], semester_scope, override_start=COACH_STUDENT_START_DATES.get(name))
-                if status == "TOKEN_EXPIRED":
-                    print("Token expired, returning to main menu.")
-                else:
-                    maybe_write_schema_report()
-                    maybe_write_pending_debug_report()
-                continue
-
-            print("Invalid option, returning to main menu.")
 
         break
 
