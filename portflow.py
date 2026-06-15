@@ -1063,6 +1063,7 @@ def _fetch_pending_evaluations_list(token: str) -> list[dict]:
     all_items: list = []
     page = 1
     while True:
+        _ev_per_page = 50  # API retourneert maximaal 50 per pagina voor dit endpoint
         response = request_with_retries(
             f"{BASE_URL}/portfolios/{OWN_PORTFOLIO_ID}/progress-review/invitations/received",
             headers,
@@ -1070,7 +1071,7 @@ def _fetch_pending_evaluations_list(token: str) -> list[dict]:
                 "order_by":        "created_at",
                 "order_direction": "desc",
                 "page":            page,
-                "per_page":        PER_PAGE,
+                "per_page":        _ev_per_page,
                 "status":          "not_submitted",
             },
         )
@@ -1085,7 +1086,7 @@ def _fetch_pending_evaluations_list(token: str) -> list[dict]:
         if not isinstance(data, list) or not data:
             break
         all_items.extend(data)
-        if len(data) < PER_PAGE:
+        if len(data) < _ev_per_page:
             break
         page += 1
     return all_items
