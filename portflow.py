@@ -305,13 +305,39 @@ def parse_args():
         action="store_true",
         help="Toon beheeropties (Excel-import, studenten toevoegen aan .env)",
     )
+    parser.add_argument(
+        "--verberg",
+        default=None,
+        metavar="KOLOMMEN",
+        help="Verberg kolommen in de tabel (komma-gescheiden): Tribe, Semester, Gilde of 'alles'",
+    )
     return parser.parse_args()
+
+
+def parse_hidden_columns(raw: str | None) -> set:
+    """Zet de --verberg waarde om in een set kolomnamen ('Tribe','Semester','Gilde')."""
+    if not raw:
+        return set()
+    _known = {"tribe": "Tribe", "semester": "Semester", "gilde": "Gilde"}
+    hidden: set = set()
+    for part in raw.split(","):
+        key = part.strip().lower()
+        if not key:
+            continue
+        if key == "alles":
+            return set(_known.values())
+        if key in _known:
+            hidden.add(_known[key])
+        else:
+            print(f"Waarschuwing: onbekende kolom '{part.strip()}' bij --verberg (genegeerd).")
+    return hidden
 
 
 ARGS = parse_args()
 DUMP_SCHEMA = ARGS.dump_schema
 DEBUG_API = ARGS.debug_api
 DEBUG_PENDING = ARGS.debug_pending
+HIDDEN_COLUMNS = parse_hidden_columns(ARGS.verberg)
 
 API_DEBUG_FILE = "api_debug_log.jsonl"
 PENDING_DEBUG_FILE = "pending_debug.json"
@@ -1092,16 +1118,72 @@ def _fetch_pending_evaluations_list(token: str) -> list[dict]:
     return all_items
 
 
+def _fetch_selfeval_skills_by_request(token, portfolio_ids, wanted_rids=None):
+    """Bouwt een map review_request_id -> 'OC(1), KO(1), ...' op basis van de
+    zelfevaluatie-niveaus in de gekoppelde doelen van de studentportfolio's.
+
+    Per portfolio worden de doelen en feedback-items opgehaald; self-evaluaties
+    worden gekoppeld aan hun review_request_id en het ingevulde niveau.
+    """
+    abbrev_by_goal = {full: ab for full, ab in GOAL_COLUMNS}
+    order = [ab for _, ab in GOAL_COLUMNS]
+    per_rid: dict = {}  # rid -> {abbrev: level}
+
+    unique_pids = [p for p in dict.fromkeys(portfolio_ids) if p]
+    for n, pid in enumerate(unique_pids, 1):
+        _show_progress(n, len(unique_pids), f"portfolio {pid}")
+        goals = get_goals(token, pid)
+        if not isinstance(goals, list):
+            continue
+        for goal in goals:
+            gid = goal.get("id")
+            ab = abbrev_by_goal.get(goal.get("name"))
+            if not ab or gid is None:
+                continue
+            items = get_feedback(token, pid, gid)
+            if not isinstance(items, list):
+                continue
+            for it in items:
+                if it.get("type") != "criterion_evaluation" or it.get("role") != "self":
+                    continue
+                ev = it.get("evaluation") or {}
+                rid = ev.get("review_request_id")
+                if not rid or (wanted_rids is not None and rid not in wanted_rids):
+                    continue
+                per_rid.setdefault(rid, {})[ab] = resolve_level(ev)
+    if unique_pids:
+        print()  # sluit de voortgangsregel af
+
+    formatted: dict = {}
+    for rid, skills in per_rid.items():
+        parts = []
+        for ab in order:
+            if ab in skills:
+                lvl = skills[ab]
+                parts.append(f"{ab}({lvl})" if lvl else ab)
+        formatted[rid] = ", ".join(parts)
+    return formatted
+
+
 def _run_pending_evaluations_menu(
     token: str,
     include_names: "set[str] | None" = None,
     exclude_names: "set[str] | None" = None,
+    show_coach_gildemeester: bool = False,
+    skills_from_goals: bool = False,
 ) -> None:
     """Toont openstaande evaluatieverzoeken in een tabel met interactief detailmenu.
 
     include_names: toon alleen evaluaties waarvan de student in deze set zit.
     exclude_names: toon alleen evaluaties waarvan de student NIET in deze set zit.
+    show_coach_gildemeester: voeg kolommen 'Coach' en 'Gildemeester' toe.
+    skills_from_goals: bepaal de vaardigheden uit de gekoppelde doelen + zelfevaluatie-
+        niveaus i.p.v. uit de titel (valt terug op de titel als er niets gevonden is).
     """
+    # Samengevoegde lookups (gilde-data wint, daarna tribe, daarna coach)
+    _coach_lookup = {**COACH_STUDENT_COACH, **TRIBE_STUDENT_COACH, **GILDE_STUDENT_COACH}
+    _gm_lookup = {**COACH_STUDENT_GILDEMEESTER, **TRIBE_STUDENT_GILDEMEESTER, **GILDE_STUDENT_GILDEMEESTER}
+
     print("Openstaande evaluatieverzoeken ophalen...", end="  ", flush=True)
     raw_items = _fetch_pending_evaluations_list(token)
 
@@ -1123,12 +1205,27 @@ def _run_pending_evaluations_menu(
             "status":   item.get("status") or "",
             "note":     note_text,
             "skills":   _ev_parse_skills_from_title(title, note_text),
+            "coach":         _coach_lookup.get(student_name, ""),
+            "gildemeester":  _gm_lookup.get(student_name, ""),
+            "portfolio_id":      item.get("portfolio_id"),
+            "review_request_id": item.get("review_request_id"),
         })
     print(f"{len(evaluations)} gevonden.")
 
     if not evaluations:
         print("\nGeen openstaande evaluatieverzoeken gevonden.")
         return
+
+    # Vaardigheden uit de gekoppelde doelen + zelfevaluatie-niveaus ophalen.
+    if skills_from_goals:
+        print("Vaardigheden ophalen uit gekoppelde doelen (zelfevaluatie-niveaus)...")
+        _wanted = {e["review_request_id"] for e in evaluations if e.get("review_request_id")}
+        _pids = [e.get("portfolio_id") for e in evaluations]
+        _skills_map = _fetch_selfeval_skills_by_request(token, _pids, wanted_rids=_wanted)
+        for e in evaluations:
+            _s = _skills_map.get(e.get("review_request_id"))
+            if _s:
+                e["skills"] = _s
 
     nr_w        = len(str(len(evaluations)))
     max_title   = max(max(len(e["title"])   for e in evaluations), len("Titel"))
@@ -1143,17 +1240,24 @@ def _run_pending_evaluations_menu(
         f"{'Aangemaakt op':<{max_date}}  "
         f"{'Vaardigheden':<{max_skills}}"
     )
+    if show_coach_gildemeester:
+        max_coach = max(max(len(e["coach"])        for e in evaluations), len("Coach"))
+        max_gm    = max(max(len(e["gildemeester"]) for e in evaluations), len("Gildemeester"))
+        header += f"  {'Coach':<{max_coach}}  {'Gildemeester':<{max_gm}}"
     print()
     print(header)
     print("-" * len(header))
     for i, ev in enumerate(evaluations, 1):
-        print(
+        row = (
             f"{i:>{nr_w}}  "
             f"{ev['title']:<{max_title}}  "
             f"{ev['student']:<{max_student}}  "
             f"{ev['date']:<{max_date}}  "
             f"{ev['skills']:<{max_skills}}"
         )
+        if show_coach_gildemeester:
+            row += f"  {ev['coach']:<{max_coach}}  {ev['gildemeester']:<{max_gm}}"
+        print(row)
     print()
     print(f"  {len(evaluations)} openstaande evaluatie(s)")
     print()
@@ -1173,6 +1277,9 @@ def _run_pending_evaluations_menu(
                 print()
                 print(f"  Titel       : {ev['title']}")
                 print(f"  Student     : {ev['student']}")
+                if show_coach_gildemeester:
+                    print(f"  Coach       : {ev['coach'] or '-'}")
+                    print(f"  Gildemeester: {ev['gildemeester'] or '-'}")
                 print(f"  Aangemaakt  : {ev['date']}")
                 if ev["due_date"]:
                     print(f"  Deadline    : {ev['due_date']}")
@@ -1772,41 +1879,52 @@ def extract_students(shared_items):
 
 def get_sent_invitations(token, portfolio_id) -> dict:
     """
-    Haalt openstaande review requests op die vanuit dit portfolio zijn verzonden.
-    Geeft een dict terug: review_request_id → reviewer_name.
+    Haalt review requests op die vanuit dit portfolio zijn verzonden.
+    Geeft een dict terug: review_request_id → {"name": reviewer_naam|None, "status": status|None}.
 
     Gebruikt: GET /portfolios/{id}/progress-review/invitations/sent
     """
     headers = {"accept": "*/*", "authorization": f"Bearer {token}", "user-agent": "Mozilla/5.0"}
-    response = request_with_retries(
-        f"{BASE_URL}/portfolios/{portfolio_id}/progress-review/invitations/sent",
-        headers,
-        params={"per_page": PER_PAGE},
-    )
-    if response in (None, "TOKEN_EXPIRED"):
-        return {}
-    if isinstance(response, requests.Response) and response.status_code == 404:
-        return {}
-    try:
-        data = response.json()
-    except Exception:
-        return {}
-    if not isinstance(data, list):
-        return {}
-
     mapping: dict = {}
-    for item in data:
-        rid = item.get("review_request_id")
-        if not rid:
-            continue
-        reviewer_obj = item.get("reviewer") or {}
-        name = (
-            reviewer_obj.get("name")
-            or reviewer_obj.get("full_name")
-            or item.get("reviewer_name")
+    page = 1
+    while True:
+        response = request_with_retries(
+            f"{BASE_URL}/portfolios/{portfolio_id}/progress-review/invitations/sent",
+            headers,
+            params={
+                "order_by": "created_at",
+                "order_direction": "desc",
+                "page": page,
+                "per_page": PER_PAGE,
+            },
         )
-        if name:
-            mapping[rid] = name
+        if response in (None, "TOKEN_EXPIRED"):
+            break
+        if isinstance(response, requests.Response) and response.status_code == 404:
+            break
+        try:
+            data = response.json()
+        except Exception:
+            break
+        if not isinstance(data, list) or not data:
+            break
+
+        for item in data:
+            rid = item.get("review_request_id")
+            if not rid:
+                continue
+            reviewer_obj = item.get("reviewer") or {}
+            name = (
+                reviewer_obj.get("name")
+                or reviewer_obj.get("full_name")
+                or item.get("reviewer_name")
+            )
+            mapping[rid] = {"name": name, "status": item.get("status")}
+
+        if len(data) < PER_PAGE:
+            break
+        page += 1
+
     return mapping
 
 
@@ -1883,7 +2001,12 @@ def pending_reason(item, evaluation):
 
     if review_request_scored is False:
         return "review_request_scored_false"
-    if level in (None, ""):
+    # Een ontbrekend niveau telt alleen als 'openstaand' wanneer het verzoek nog
+    # niet als geheel is beoordeeld. Is review_request_scored True, dan heeft de
+    # coach het verzoek afgehandeld en betekent een leeg niveau op dit criterium
+    # 'in dit verzoek geen niveau toegekend' (bv. wel gescoord in een ander
+    # verzoek) — geen openstaande beoordeling, dus geen '?'.
+    if level in (None, "") and review_request_scored is not True:
         return "missing_level"
     if role == "self" and review_request_scored is not True:
         return "self_not_confirmed_scored"
@@ -2270,7 +2393,7 @@ def collect_results(
                     # evaluation.reviewer is the student themselves on self-eval items.
                     # Look up the actual assigned assessor via the sent-invitations map.
                     _rid = (evaluation or {}).get("review_request_id")
-                    _ev_reviewer = rid_to_reviewer.get(_rid) if _rid else None
+                    _ev_reviewer = (rid_to_reviewer.get(_rid) or {}).get("name") if _rid else None
                 else:
                     _ev_reviewer = (
                         None if _pending_role == "self"
@@ -2312,16 +2435,28 @@ def collect_results(
             if include_ungraded:
                 self_by_rid: dict = {}    # rid -> (item, evaluation)
                 reviewer_rids: set = set()  # rids with any coach/assessor response
+                scored_coach_dates: list = []  # datums van beoordeelde coach-evaluaties voor dit doel
 
                 for _item in feedback_items:
                     if _item.get("type") != "criterion_evaluation":
                         continue
                     _ev = _item.get("evaluation") or {}
+                    _role = _item.get("role")
+                    # Verzamel datums van daadwerkelijk beoordeelde coach-evaluaties.
+                    # Deze items dragen vaak review_request_id=null, dus rid-matching
+                    # werkt niet; datum-matching wel.
+                    # Elke niet-'self' rol telt als beoordelaar (coach, assessor,
+                    # teacher, gildemeester, ...). Dit moet gelijk lopen met de
+                    # hoofdrendering, die ook elke niet-'self' evaluatie als een
+                    # geldige beoordeling toont.
+                    if _role != "self" and resolve_level(_ev) is not None:
+                        _cdt = resolve_evaluation_date(_item, _ev)
+                        if _cdt is not None:
+                            scored_coach_dates.append(_cdt)
                     _rid = _ev.get("review_request_id")
                     if not _rid:
                         continue
-                    _role = _item.get("role")
-                    if _role in ("coach", "assessor"):
+                    if _role != "self":
                         reviewer_rids.add(_rid)
                     elif _role == "self":
                         _dt = resolve_evaluation_date(_item, _ev)
@@ -2329,29 +2464,77 @@ def collect_results(
                         if _in:
                             self_by_rid.setdefault(_rid, (_item, _ev))
 
+                # Verzamel kandidaat-'?'s: zelfevaluaties zonder coach-respons (rid)
+                # die niet al door een latere beoordeling zijn beantwoord (datum).
+                _candidates: list = []  # (rid, sitem, sev, self_dt)
                 for _rid, (_sitem, _sev) in self_by_rid.items():
                     if _rid in reviewer_rids:
                         continue
+                    # Onderdruk een '?' voor een afgewezen verzoek: de coach heeft
+                    # het verzoek geweigerd (status 'denied'), dus het wacht niet
+                    # meer op een beoordeling. De student dient eventueel opnieuw in
+                    # met een nieuwe review_request_id (die krijgt dan een eigen '?').
+                    if (rid_to_reviewer.get(_rid) or {}).get("status") == "denied":
+                        log_pending_debug_event({
+                            "student_name": student_name, "portfolio_id": portfolio_id,
+                            "goal_id": goal_id, "goal_name": goal_name, "role": "coach",
+                            "decision": "skip", "reason": "coach_pending_denied",
+                            "review_request_id": _rid,
+                            "review_request_title": _sev.get("review_request_title"),
+                            "self_submitted_at": _sev.get("submitted_at"),
+                        })
+                        continue
                     _self_dt = resolve_evaluation_date(_sitem, _sev)
+                    # Onderdruk een verouderde '?': als er voor dit doel al een
+                    # beoordeelde coach-evaluatie is op of ná de zelfevaluatie,
+                    # is het verzoek inmiddels beantwoord (niet meer openstaand).
+                    if _self_dt is not None and any(
+                        _cd.date() >= _self_dt.date() for _cd in scored_coach_dates
+                    ):
+                        log_pending_debug_event({
+                            "student_name": student_name, "portfolio_id": portfolio_id,
+                            "goal_id": goal_id, "goal_name": goal_name, "role": "coach",
+                            "decision": "skip", "reason": "coach_pending_superseded",
+                            "review_request_id": _rid,
+                            "review_request_title": _sev.get("review_request_title"),
+                            "self_submitted_at": _sev.get("submitted_at"),
+                        })
+                        continue
+                    _candidates.append((_rid, _sitem, _sev, _self_dt))
+
+                # Houd per doel alleen de meest recente openstaande evaluatie aan.
+                # Een oudere openstaande zelfevaluatie voor hetzelfde doel is in de
+                # praktijk vervangen door een herinzending (bijv. nadat de eerste
+                # door een coach is afgewezen) en hoort geen '?' meer te tonen.
+                _latest = max((c[3].date() for c in _candidates if c[3] is not None), default=None)
+
+                for _rid, _sitem, _sev, _self_dt in _candidates:
+                    if _latest is not None and _self_dt is not None and _self_dt.date() < _latest:
+                        log_pending_debug_event({
+                            "student_name": student_name, "portfolio_id": portfolio_id,
+                            "goal_id": goal_id, "goal_name": goal_name, "role": "coach",
+                            "decision": "skip", "reason": "coach_pending_resent",
+                            "review_request_id": _rid,
+                            "review_request_title": _sev.get("review_request_title"),
+                            "self_submitted_at": _sev.get("submitted_at"),
+                        })
+                        continue
+                    _sent = rid_to_reviewer.get(_rid) or {}
                     results.append({
                         "student_name": student_name,
                         "goal_name": goal_name,
                         "evaluation": "?",
                         "submitted_at_iso": _self_dt.isoformat() if _self_dt else None,
                         "pending_detail": {
-                            "reviewer": rid_to_reviewer.get(_rid),
+                            "reviewer": _sent.get("name"),
                             "date": format_short_date(_self_dt),
                             "title": _sev.get("review_request_title"),
                         },
                     })
                     log_pending_debug_event({
-                        "student_name": student_name,
-                        "portfolio_id": portfolio_id,
-                        "goal_id": goal_id,
-                        "goal_name": goal_name,
-                        "role": "coach",
-                        "decision": "include",
-                        "rendered": "?",
+                        "student_name": student_name, "portfolio_id": portfolio_id,
+                        "goal_id": goal_id, "goal_name": goal_name, "role": "coach",
+                        "decision": "include", "rendered": "?",
                         "reason": "coach_pending_inferred",
                         "review_request_id": _rid,
                         "review_request_title": _sev.get("review_request_title"),
@@ -2364,10 +2547,10 @@ def collect_results(
     return results
 
 
-def print_week_barchart(results, override_start=None):
+def print_week_barchart(results, override_start=None, max_rows=10):
     import math as _math
     from datetime import timedelta as _td
-    MAX_ROWS = 10
+    MAX_ROWS = max_rows
     sem_start = override_start if override_start is not None else CURRENT_SEMESTER_START
     sem_end   = CURRENT_SEMESTER_END
 
@@ -2377,7 +2560,8 @@ def print_week_barchart(results, override_start=None):
         return
 
     _counted_levels = {"1", "2", "3", "?"}
-    counts = [0] * num_weeks
+    counts = [0] * num_weeks          # totaal per week (behaald + ingediend)
+    pending_counts = [0] * num_weeks  # alleen ingediende '?' per week
     for r in results:
         level = extract_level_short(r.get("evaluation", ""))
         if level not in _counted_levels:
@@ -2394,9 +2578,17 @@ def print_week_barchart(results, override_start=None):
         week_idx = (d - sem_start).days // 7
         if 0 <= week_idx < num_weeks:
             counts[week_idx] += 1
+            if level == "?":
+                pending_counts[week_idx] += 1
 
     if not any(c > 0 for c in counts):
         return
+
+    # Kleuren voor de balksegmenten
+    _C_ACHIEVED = "\033[38;2;141;164;122m"  # salie-groen = behaalde niveaus
+    _C_PENDING  = "\033[38;2;100;160;220m"  # blauw       = ingediende '?'
+    _C_RESET    = "\033[0m"
+    _BLOCK      = "██"
 
     max_count    = max(counts)
     display_rows = min(max_count, MAX_ROWS)
@@ -2407,6 +2599,18 @@ def print_week_barchart(results, override_start=None):
         max(1, round(c * display_rows / max_count)) if c > 0 else 0
         for c in counts
     ]
+
+    # Verdeel elke balk in een behaald- en een ingediend-deel ('?' bovenop).
+    pending_heights = [0] * num_weeks
+    for i in range(num_weeks):
+        if counts[i] <= 0 or pending_counts[i] <= 0:
+            continue
+        ph = max(1, round(pending_counts[i] * bar_heights[i] / counts[i]))
+        ph = min(ph, bar_heights[i])
+        # Laat minstens 1 rij over voor behaalde niveaus als die er ook zijn
+        if pending_counts[i] < counts[i] and ph >= bar_heights[i]:
+            ph = bar_heights[i] - 1
+        pending_heights[i] = ph
 
     # Real-value label for each row on the Y-axis
     row_labels = {
@@ -2433,11 +2637,19 @@ def print_week_barchart(results, override_start=None):
     )
     print(count_row)
 
-    # Bar rows from display_rows down to 1; height is proportionally scaled
+    # Bar rows from display_rows down to 1; height is proportionally scaled.
+    # Behaalde niveaus onderaan (groen), ingediende '?' bovenop (blauw).
     for row_val in range(display_rows, 0, -1):
         y_label = f"{row_labels[row_val]:>{y_w}} │"
-        row = "".join(" ██  " if bar_heights[i] >= row_val else "     " for i in range(num_weeks))
-        print(y_label + row)
+        cells = []
+        for i in range(num_weeks):
+            if bar_heights[i] >= row_val:
+                achieved_height = bar_heights[i] - pending_heights[i]
+                color = _C_PENDING if row_val > achieved_height else _C_ACHIEVED
+                cells.append(f" {color}{_BLOCK}{_C_RESET}  ")
+            else:
+                cells.append("     ")
+        print(y_label + "".join(cells))
 
     # X-axis
     print(f"{axis_prefix}╠{'═' * (num_weeks * COL_W)}╣")
@@ -2447,6 +2659,13 @@ def print_week_barchart(results, override_start=None):
 
     # Date labels: day/month of the Monday of each week
     print(label_prefix + "".join(f"{ws.day}/{ws.month:<{COL_W - len(str(ws.day)) - 1}}" for ws in week_starts))
+
+    # Legenda (alleen tonen wat van toepassing is)
+    if any(pending_counts):
+        print(
+            f"{label_prefix}{_C_ACHIEVED}{_BLOCK}{_C_RESET} behaald   "
+            f"{_C_PENDING}{_BLOCK}{_C_RESET} ingediend (?)"
+        )
 
 
 def print_student_evaluations(token, student_name, student_data, semester_scope="current", override_start=None):
@@ -2496,7 +2715,6 @@ def print_student_evaluations(token, student_name, student_data, semester_scope=
         else:
             print("\nIngediende evaluaties (nog niet beoordeeld): (geen)")
 
-    print_week_barchart(results, override_start=override_start)
     return "OK"
 
 # ------------------------
@@ -2569,13 +2787,21 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
     coach_width        = max(len("Coach"), max((len(_coach_map.get(s, "")) for s in student_goals), default=0)) if _coach_map is not None else 0
     gildemeester_width = max(len("Gildemeester"), max((len(gildemeester_map.get(s, "")) for s in student_goals), default=0)) if gildemeester_map is not None else 0
 
+    # Welke van de drie meest rechtse kolommen tonen we? (zie --verberg)
+    _show_tribe = "Tribe" not in HIDDEN_COLUMNS
+    _show_sem   = "Semester" not in HIDDEN_COLUMNS
+    _show_gilde = "Gilde" not in HIDDEN_COLUMNS
+
     # Bereken visuele breedte voor de scheidingslijn (zonder ANSI-codes)
     _plain_header = f"{'Naam':<{name_width}}"
     for (_, abbrev), w in zip(GOAL_COLUMNS, col_widths):
         _plain_header += f" | {abbrev:<{w}}"
-    _plain_header += f" | {'Tribe':<{tribe_width}}"
-    _plain_header += f" | {'Semester':<{sem_width}}"
-    _plain_header += f" | {'Gilde':<{gilde_width}}"
+    if _show_tribe:
+        _plain_header += f" | {'Tribe':<{tribe_width}}"
+    if _show_sem:
+        _plain_header += f" | {'Semester':<{sem_width}}"
+    if _show_gilde:
+        _plain_header += f" | {'Gilde':<{gilde_width}}"
     if _coach_map is not None:
         _plain_header += f" | {'Coach':<{coach_width}}"
     if gildemeester_map is not None:
@@ -2587,9 +2813,12 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
     for (full_name, abbrev), w in zip(GOAL_COLUMNS, col_widths):
         bg = _GOAL_BG[full_name]
         header += f" | {bg}{abbrev:<{w}}{_RESET}"
-    header += f" | {'Tribe':<{tribe_width}}"
-    header += f" | {'Semester':<{sem_width}}"
-    header += f" | {'Gilde':<{gilde_width}}"
+    if _show_tribe:
+        header += f" | {'Tribe':<{tribe_width}}"
+    if _show_sem:
+        header += f" | {'Semester':<{sem_width}}"
+    if _show_gilde:
+        header += f" | {'Gilde':<{gilde_width}}"
     if _coach_map is not None:
         header += f" | {'Coach':<{coach_width}}"
     if gildemeester_map is not None:
@@ -2626,9 +2855,12 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
             for (full_name, _), w in zip(GOAL_COLUMNS, col_widths):
                 bg = _GOAL_BG[full_name]
                 row += f" | \033[2m{'n/b' if w >= 3 else '-':<{w}}\033[0m"
-            row += f" | \033[2m{display_tribe:<{tribe_width}}\033[0m"
-            row += f" | \033[2m{display_sem:<{sem_width}}\033[0m"
-            row += f" | \033[2m{display_gilde:<{gilde_width}}\033[0m"
+            if _show_tribe:
+                row += f" | \033[2m{display_tribe:<{tribe_width}}\033[0m"
+            if _show_sem:
+                row += f" | \033[2m{display_sem:<{sem_width}}\033[0m"
+            if _show_gilde:
+                row += f" | \033[2m{display_gilde:<{gilde_width}}\033[0m"
             if _coach_map is not None:
                 row += f" | \033[2m{display_coach:<{coach_width}}\033[0m"
             if gildemeester_map is not None:
@@ -2655,9 +2887,12 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
                 row += f" | \033[104m{cell:<{w}}\033[0m"
             else:
                 row += f" | {cell:<{w}}"
-        row += f" | {display_tribe:<{tribe_width}}"
-        row += f" | {display_sem:<{sem_width}}"
-        row += f" | {display_gilde:<{gilde_width}}"
+        if _show_tribe:
+            row += f" | {display_tribe:<{tribe_width}}"
+        if _show_sem:
+            row += f" | {display_sem:<{sem_width}}"
+        if _show_gilde:
+            row += f" | {display_gilde:<{gilde_width}}"
         if _coach_map is not None:
             row += f" | {display_coach:<{coach_width}}"
         if gildemeester_map is not None:
@@ -3074,6 +3309,8 @@ try:
                 options.append(("gilde", "Toon een tabel met alle studenten in mijn gilde (uit .env)"))
             options.append(("evaluaties_coach", "Toon een lijst met evaluaties die ik nog moet beoordelen (coach studenten)"))
             options.append(("evaluaties_gilde", "Toon een lijst met evaluaties die ik nog moet beoordelen (gilde studenten)"))
+            if COACH_STUDENT_NAMES - {SEPARATOR_SENTINEL}:
+                options.append(("grafieken_coach", "Print de grafieken voor alle studenten die ik coach"))
 
             _lijst_source_map2 = {"alles": "shared", "coach": "coach", "tribe": "tribe", "gilde": "gilde"}
             _pre_source2 = _lijst_source_map2.get(ARGS.lijst) if ARGS.lijst else None
@@ -3104,12 +3341,12 @@ try:
 
             if source == "evaluaties_coach":
                 _coach_names = COACH_STUDENT_NAMES - {SEPARATOR_SENTINEL}
-                _run_pending_evaluations_menu(token, include_names=_coach_names)
+                _run_pending_evaluations_menu(token, include_names=_coach_names, skills_from_goals=True)
                 break
 
             if source == "evaluaties_gilde":
                 _coach_names = COACH_STUDENT_NAMES - {SEPARATOR_SENTINEL}
-                _run_pending_evaluations_menu(token, exclude_names=_coach_names)
+                _run_pending_evaluations_menu(token, exclude_names=_coach_names, show_coach_gildemeester=True, skills_from_goals=True)
                 break
 
             all_students, token = _fetch_shared(token)
@@ -3197,6 +3434,27 @@ try:
                 else:
                     print()
                     print_coach_table(all_results, all_names=gilde_names_list, inaccessible_names=inaccessible, sem_map=GILDE_STUDENT_SEMESTER, tribe_map=GILDE_STUDENT_TRIBE, gilde_map=GILDE_STUDENT_GILDE, coach_map=GILDE_STUDENT_COACH, gildemeester_map=GILDE_STUDENT_GILDEMEESTER)
+                    maybe_write_schema_report()
+                    maybe_write_pending_debug_report()
+
+            elif source == "grafieken_coach":
+                students = {n: d for n, d in all_students.items() if n in COACH_STUDENT_NAMES}
+                coach_names_list = [name for name, *_ in CURRENT_COACH_STUDENTS]
+                real_names = [n for n in coach_names_list if n != SEPARATOR_SENTINEL]
+                for idx, name in enumerate(real_names, start=1):
+                    if name not in students:
+                        continue
+                    _show_progress(idx, len(real_names), name)
+                    res = collect_results(token, name, students[name], semester_scope, override_start=COACH_STUDENT_START_DATES.get(name), include_ungraded=bool(ARGS.vraagtekens))
+                    if res == "TOKEN_EXPIRED":
+                        print()
+                        print("Token verlopen, terug naar hoofdmenu.")
+                        break
+                    display_name = anonymize_name(name) if ARGS.anoniem else name
+                    print(f"\n{display_name}")
+                    print_week_barchart(res, max_rows=6)
+                else:
+                    print()
                     maybe_write_schema_report()
                     maybe_write_pending_debug_report()
 
