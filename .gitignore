@@ -217,12 +217,8 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-<<<<<<< HEAD
 /exports/
 /test/
-=======
-/exports/
->>>>>>> 7064dcd06b795d642d880c9d023287a28ecf2737
 Studenten jaar 2 overzicht (feb 26) (1).xlsx
 .env copy
 evaluaties_debug.json
