@@ -212,6 +212,207 @@ GOAL_COLUMNS = [
     ("Reflecteren",                 "RE"),
 ]
 
+# ---------------------------------------------------------------------------
+# HBO-i beroepstaken: 5 architectuurlagen × 5 activiteiten = 25 beroepstaken.
+# Een beroepstaak verschijnt in de Portflow-data als (top-level) doel óf als
+# subdoel gekoppeld onder een ander doel (meestal KPM). De namen zijn vaak
+# rommelig gespeld ("Software Analyzeren", "software-analyseren", "SW-AN", ...),
+# dus mappen we ze fuzzy op een korte code als 'SW-AN'.
+# ---------------------------------------------------------------------------
+_BEROEPSTAAK_CATEGORIES = [
+    ("GI", "Gebruikersinteractie"),
+    ("OP", "Organisatieprocessen"),
+    ("IN", "Infrastructuur"),
+    ("SW", "Software"),
+    ("HI", "Hardware interfacing"),
+]
+_BEROEPSTAAK_ACTIVITIES = [
+    ("AN", "Analyseren"),
+    ("AD", "Adviseren"),
+    ("ON", "Ontwerpen"),
+    ("RE", "Realiseren"),
+    ("MC", "Manage & Control"),
+]
+_BT_CAT_NAME = {code: name for code, name in _BEROEPSTAAK_CATEGORIES}
+_BT_ACT_NAME = {code: name for code, name in _BEROEPSTAAK_ACTIVITIES}
+# Canonieke weergavevolgorde: GI-AN, GI-AD, ... , HI-MC
+_BEROEPSTAAK_ORDER = [
+    f"{cat}-{act}" for cat, _ in _BEROEPSTAAK_CATEGORIES for act, _ in _BEROEPSTAAK_ACTIVITIES
+]
+
+
+def _beroepstaak_category(name_l: str, tokens: "set[str]") -> "str | None":
+    if "gebruiker" in name_l:
+        return "GI"
+    if "organisatie" in name_l:
+        return "OP"
+    if "infrastruct" in name_l or "infra" in name_l:
+        return "IN"
+    if "software" in name_l:
+        return "SW"
+    if "hardware" in name_l:
+        return "HI"
+    # Losse codetokens; 'op' en 'in' bewust weggelaten: dat zijn Nederlandse
+    # voorzetsels die anders valse treffers geven.
+    for token, code in (("gi", "GI"), ("sw", "SW"), ("hi", "HI")):
+        if token in tokens:
+            return code
+    return None
+
+
+def _beroepstaak_activity(name_l: str) -> "str | None":
+    if "analy" in name_l:
+        return "AN"
+    if "advis" in name_l or "advie" in name_l:
+        return "AD"
+    if "ontwerp" in name_l:
+        return "ON"
+    if "realis" in name_l or "realiz" in name_l:
+        return "RE"
+    if "manage" in name_l or "m&c" in name_l or "control" in name_l:
+        return "MC"
+    return None
+
+
+def beroepstaak_code(name: "str | None") -> "str | None":
+    """Map een (vaak rommelig gespelde) doel-/subdoelnaam naar een HBO-i
+    beroepstaakcode zoals 'SW-RE', of None als het geen beroepstaak is."""
+    if not name:
+        return None
+    name_l = name.lower()
+    # Directe codevorm, bijv. 'SW-RE' of 'GI-AN'.
+    m = re.search(r"\b(gi|op|in|sw|hi)\s*-\s*(an|ad|on|re|mc)\b", name_l)
+    if m:
+        return f"{m.group(1).upper()}-{m.group(2).upper()}"
+    tokens = set(re.split(r"[^a-z0-9&]+", name_l))
+    cat = _beroepstaak_category(name_l, tokens)
+    act = _beroepstaak_activity(name_l)
+    if cat and act:
+        return f"{cat}-{act}"
+    return None
+
+
+def beroepstaak_name(code: "str | None") -> str:
+    """Geef de volledige naam bij een beroepstaakcode, bijv. 'Software Realiseren'."""
+    if not code or "-" not in code:
+        return code or ""
+    cat, act = code.split("-", 1)
+    return f"{_BT_CAT_NAME.get(cat, cat)} {_BT_ACT_NAME.get(act, act)}"
+
+
+def _best_beroepstaak_level(levels: "list[str]") -> str:
+    """Kies het te tonen niveau uit meerdere evaluaties van dezelfde beroepstaak:
+    hoogste numerieke niveau wint; anders een tekstlabel; anders '?'."""
+    nums: "list[int]" = []
+    others: "list[str]" = []
+    for lvl in levels:
+        if not lvl:
+            continue
+        if re.fullmatch(r"\d+", lvl):
+            nums.append(int(lvl))
+        elif lvl != "?":
+            others.append(lvl)
+    if nums:
+        return str(max(nums))
+    if others:
+        return others[-1]
+    return "?"
+
+
+def _format_beroepstaken_cell(results: "list[dict]") -> str:
+    """Bouw de tabelcel met het aantal beroepstaken per niveau (bv. '3x2, 1x1').
+    Per beroepstaak telt het hoogste behaalde niveau; daarna geteld per niveau,
+    aflopend (3, 2, 1, 0) en daarna '?'."""
+    by_code: "dict[str, list[str]]" = {}
+    for r in results:
+        code = r.get("beroepstaak")
+        if not code:
+            continue
+        by_code.setdefault(code, []).append(extract_level_short(r["evaluation"]))
+    if not by_code:
+        return ""
+    counts: "dict[str, int]" = {}
+    for levels in by_code.values():
+        lvl = _best_beroepstaak_level(levels)
+        counts[lvl] = counts.get(lvl, 0) + 1
+
+    def _order_key(level: str):
+        # numerieke niveaus hoog -> laag eerst, dan '?', dan overige labels
+        if level.isdigit():
+            return (0, -int(level), level)
+        if level == "?":
+            return (1, 0, level)
+        return (2, 0, level)
+
+    return ", ".join(f"{counts[lvl]}x{lvl}" for lvl in sorted(counts, key=_order_key))
+
+
+# Namen van de 10 vaardigheden (zoals ze als doelnaam terugkomen in de API)
+_VAARDIGHEID_NAMES = {full for full, _ in GOAL_COLUMNS}
+# Een review request die als één geheel alle 10 vaardigheden afdekt = een
+# eindsemester-assessment. De openstaande '?' daarvan worden in de tabel verborgen
+# en in de enkele-studentweergave samengevat als 'Assessment ingeleverd'.
+FULL_ASSESSMENT_MIN_SKILLS = 10
+
+
+def _full_assessment_rids(results: "list[dict]") -> set:
+    """Geef de set review_request_id's terug van eindassessments (verzoeken waarin de
+    student in één keer alle 10 vaardigheden zelf evalueerde). De markering
+    `full_assessment` wordt in collect_results gezet op basis van de zelfevaluaties,
+    onafhankelijk van welke '?' uiteindelijk overblijven."""
+    return {
+        r.get("review_request_id")
+        for r in results
+        if r.get("full_assessment") and r.get("review_request_id") is not None
+    }
+
+
+def _numeric_levels(level_strings: "list[str]") -> "list[int]":
+    """Numerieke (beoordeelde) niveaus uit een lijst celwaarden; '?' telt niet mee."""
+    return [int(s) for s in level_strings if s and s.isdigit()]
+
+
+def _meets_semester(sem_raw: str, goals: dict, beroep_rows: "list[dict]") -> bool:
+    """Bepaal of een student voldoet aan de niveau-eisen voor zijn/haar semester
+    (→ groene 'Semester'-cel). Alleen gedefinieerd voor semester 3 en 4.
+
+    Semester 3: elke vaardigheid minstens 2 beoordeelde evaluaties en minstens
+    niveau 1, waarvan minstens 2 op niveau 2; en minstens 6 beroepstaken op niveau 1.
+    Semester 4: elke vaardigheid minstens 2 beoordeelde evaluaties en minstens
+    niveau 1, waarvan minstens 8 op niveau 2 (incl. KPM); en minstens 4 beroepstaken
+    op niveau 2."""
+    if sem_raw not in ("3", "4"):
+        return False
+
+    per_vaard = {fn: _numeric_levels(goals.get(fn, [])) for fn, _ in GOAL_COLUMNS}
+    # Elke vaardigheid minstens 2 beoordeelde evaluaties.
+    if not all(len(per_vaard[fn]) >= 2 for fn, _ in GOAL_COLUMNS):
+        return False
+    # Elke vaardigheid minstens niveau 1.
+    max_lvl = {fn: (max(v) if v else -1) for fn, v in per_vaard.items()}
+    if not all(max_lvl[fn] >= 1 for fn, _ in GOAL_COLUMNS):
+        return False
+    n_lvl2 = sum(1 for fn, _ in GOAL_COLUMNS if max_lvl[fn] >= 2)
+
+    # Hoogste niveau per beroepstaak (code).
+    by_code: dict = {}
+    for r in beroep_rows:
+        code = r.get("beroepstaak")
+        if not code:
+            continue
+        by_code.setdefault(code, []).append(extract_level_short(r["evaluation"]))
+    beroep_best = [
+        (int(b) if b.isdigit() else -1)
+        for b in (_best_beroepstaak_level(levels) for levels in by_code.values())
+    ]
+
+    if sem_raw == "3":
+        return n_lvl2 >= 2 and sum(1 for b in beroep_best if b >= 1) >= 6
+    # semester 4
+    kpm_ok = max_lvl.get("Kwalitatief Product Maken", -1) >= 2
+    return kpm_ok and n_lvl2 >= 8 and sum(1 for b in beroep_best if b >= 2) >= 4
+
+
 # Sentinel waarde in .env die een horizontale scheidingslijn in de tabel veroorzaakt
 SEPARATOR_SENTINEL = "---"
 
@@ -1928,6 +2129,30 @@ def get_sent_invitations(token, portfolio_id) -> dict:
     return mapping
 
 
+_received_assessor_cache: dict = {}
+
+
+def get_received_assessor_map(token) -> dict:
+    """review_request_id → {"name": <ingelogde gebruiker>, "status": status} voor
+    reviewverzoeken die aan de ingelogde gebruiker (de beoordelaar) zijn gericht.
+
+    Bron: de received-invitations van de ingelogde gebruiker. Bij deze verzoeken is
+    de beoordelaar altijd de ingelogde gebruiker zelf (de student is de requester).
+    Dient als fallback voor de assessornaam wanneer het sent-invitations-endpoint
+    van een studentportfolio niet beschikbaar is (geeft daar vaak 404)."""
+    cached = _received_assessor_cache.get("map")
+    if cached is not None:
+        return cached
+    own_name = _get_own_user_name(token) or ""
+    mapping: dict = {}
+    for item in _fetch_pending_evaluations_list(token):
+        rid = item.get("review_request_id")
+        if rid:
+            mapping[rid] = {"name": own_name, "status": item.get("status")}
+    _received_assessor_cache["map"] = mapping
+    return mapping
+
+
 def get_goals(token, portfolio_id):
     headers = {"accept": "*/*", "authorization": f"Bearer {token}"}
     response = request_with_retries(
@@ -2223,6 +2448,10 @@ def collect_results(
 ):
     results = []
     any_accessible = False
+    # rid -> set vaardigheden waarvoor de student in dat verzoek een zelfevaluatie deed.
+    # Hiermee herkennen we een eindassessment (alle 10 vaardigheden in één verzoek),
+    # ook als sommige '?' later door de superseded-logica worden onderdrukt.
+    self_vaard_by_rid: dict = {}
     portfolio_ids = list(student_data["portfolio_ids"])
 
     for portfolio_id in portfolio_ids:
@@ -2244,8 +2473,13 @@ def collect_results(
         any_accessible = True
 
         # Haal reviewer-namen op voor openstaande review requests (self-evaluaties).
-        # Alleen nodig als we pending items tonen.
+        # Alleen nodig als we pending items tonen. Het sent-invitations-endpoint geeft
+        # voor studentportfolio's vaak 404; in dat geval vullen we de gevraagde
+        # beoordelaar aan vanuit de received-invitations van de ingelogde gebruiker.
         rid_to_reviewer: dict = get_sent_invitations(token, portfolio_id) if include_ungraded else {}
+        if include_ungraded:
+            for _rid, _info in get_received_assessor_map(token).items():
+                rid_to_reviewer.setdefault(_rid, _info)
 
         for goal in goals:
             goal_id = goal["id"]
@@ -2263,10 +2497,36 @@ def collect_results(
 
             for item in feedback_items:
                 observe_schema(item, "portfolios.goals.feedback_items.item")
-                if item.get("type") != "criterion_evaluation":
+                item_type = item.get("type")
+                if item_type not in ("criterion_evaluation", "sub_criterion_evaluation"):
                     continue
 
                 evaluation = item.get("evaluation")
+
+                # Bepaal of dit een beroepstaak is. Subdoelen (sub_criterion_evaluation)
+                # dragen hun naam in evaluation.sub_criterion_name; top-level doelen
+                # gebruiken de doelnaam zelf. Subdoelen die géén HBO-i beroepstaak zijn
+                # (bv. de 10 vaardigheden onder een eigen doel) negeren we volledig.
+                is_sub = item_type == "sub_criterion_evaluation"
+                entry_name = (evaluation or {}).get("sub_criterion_name") if is_sub else goal_name
+                bcode = beroepstaak_code(entry_name)
+                if is_sub and not bcode:
+                    continue
+                # De 'doelnaam' van een beroepstaak is zijn eigen naam, zodat de
+                # enkele-studentweergave de echte naam kan tonen i.p.v. het bovenliggende doel.
+                row_goal_name = entry_name if bcode else goal_name
+
+                # Leg vast welke vaardigheden de student per review request zelf
+                # evalueerde (voor herkenning van eindassessments). Dit gebeurt vóór
+                # alle pending-/superseded-filters, zodat een verzoek met alle 10
+                # vaardigheden ook herkend wordt als sommige '?' wegvallen.
+                if include_ungraded and item.get("role") == "self" and not bcode and row_goal_name in _VAARDIGHEID_NAMES:
+                    _srid = (evaluation or {}).get("review_request_id")
+                    if _srid is not None:
+                        _sdt = resolve_evaluation_date(item, evaluation)
+                        if _sdt is None or date_in_selected_semester(_sdt, semester_scope, override_start):
+                            self_vaard_by_rid.setdefault(_srid, set()).add(row_goal_name)
+
                 pending = pending_reason(item, evaluation)
 
                 if not evaluation and not include_ungraded:
@@ -2401,8 +2661,10 @@ def collect_results(
                     )
                 results.append({
                     "student_name": student_name,
-                    "goal_name": goal_name,
+                    "goal_name": row_goal_name,
+                    "beroepstaak": bcode,
                     "evaluation": evaluation_text,
+                    "review_request_id": (evaluation or {}).get("review_request_id"),
                     "submitted_at_iso": evaluation_datetime.isoformat() if evaluation_datetime else None,
                     "pending_detail": {
                         "reviewer": _ev_reviewer,
@@ -2523,7 +2785,9 @@ def collect_results(
                     results.append({
                         "student_name": student_name,
                         "goal_name": goal_name,
+                        "beroepstaak": beroepstaak_code(goal_name),
                         "evaluation": "?",
+                        "review_request_id": _rid,
                         "submitted_at_iso": _self_dt.isoformat() if _self_dt else None,
                         "pending_detail": {
                             "reviewer": _sent.get("name"),
@@ -2540,6 +2804,17 @@ def collect_results(
                         "review_request_title": _sev.get("review_request_title"),
                         "self_submitted_at": _sev.get("submitted_at"),
                     })
+
+    # Markeer resultaten van eindassessments: review requests waarin de student in
+    # één keer alle 10 vaardigheden zelf evalueerde.
+    assessment_rids = {
+        rid for rid, skills in self_vaard_by_rid.items()
+        if len(skills) >= FULL_ASSESSMENT_MIN_SKILLS
+    }
+    if assessment_rids:
+        for r in results:
+            if r.get("review_request_id") in assessment_rids:
+                r["full_assessment"] = True
 
     if portfolio_ids and not any_accessible and inaccessible_names is not None:
         inaccessible_names.add(student_name)
@@ -2673,30 +2948,55 @@ def print_student_evaluations(token, student_name, student_data, semester_scope=
     if results == "TOKEN_EXPIRED":
         return "TOKEN_EXPIRED"
 
-    # Splits in behaald en ingediend (pending)
-    achieved: dict = {}   # goal -> list of formatted strings
-    pending: dict = {}    # goal -> list of formatted strings
+    # Eindsemester-assessments (één verzoek dat alle 10 vaardigheden afdekt) niet als
+    # losse '?' per vaardigheid/beroepstaak tonen, maar samenvatten in één regel.
+    full_rids = _full_assessment_rids(results)
+
+    # Splits in behaald en ingediend (pending); beroepstaken apart van de vaardigheden
+    achieved: dict = {}          # goal -> list of formatted strings
+    pending: dict = {}           # goal -> list of formatted strings
+    beroep_achieved: dict = {}   # code -> list of formatted strings
+    beroep_pending: dict = {}    # code -> list of formatted strings
+    assessments: dict = {}       # review_request_id -> detailstring (eindassessment)
+
+    def _pending_detail_str(pd: dict) -> str:
+        reviewer = pd.get("reviewer")
+        date = pd.get("date")
+        title = pd.get("title")
+        initials = name_to_initials(reviewer) if reviewer else ""
+        parts = []
+        if initials:
+            parts.append(initials)
+        if date:
+            parts.append(date)
+        if title:
+            short_title = title[:27] + "…" if len(title) > 28 else title
+            parts.append(f'"{short_title}"')
+        return ", ".join(parts)
+
+    def _format_pending(pd: dict) -> str:
+        detail = _pending_detail_str(pd)
+        return f"? ({detail})" if detail else "?"
 
     for r in results:
         goal = r["goal_name"]
         ev = r["evaluation"]
         pd = r.get("pending_detail")
+        bcode = r.get("beroepstaak")
+        is_pending = ev == "?" and pd
 
-        if ev == "?" and pd:
-            reviewer = pd.get("reviewer")
-            date = pd.get("date")
-            title = pd.get("title")
-            initials = name_to_initials(reviewer) if reviewer else ""
-            parts = []
-            if initials:
-                parts.append(initials)
-            if date:
-                parts.append(date)
-            if title:
-                short_title = title[:27] + "…" if len(title) > 28 else title
-                parts.append(f'"{short_title}"')
-            detail = ", ".join(parts) if parts else ""
-            pending.setdefault(goal, []).append(f"? ({detail})" if detail else "?")
+        # Onderdeel van een eindassessment? Samenvatten in één regel i.p.v. losse '?'.
+        if is_pending and r.get("review_request_id") in full_rids:
+            rid = r.get("review_request_id")
+            if rid not in assessments:
+                assessments[rid] = _pending_detail_str(pd)
+            continue
+
+        if bcode:
+            target = beroep_pending if is_pending else beroep_achieved
+            target.setdefault(bcode, []).append(_format_pending(pd) if is_pending else ev)
+        elif is_pending:
+            pending.setdefault(goal, []).append(_format_pending(pd))
         else:
             achieved.setdefault(goal, []).append(ev)
 
@@ -2707,6 +3007,21 @@ def print_student_evaluations(token, student_name, student_data, semester_scope=
     else:
         print("Behaalde evaluaties: (geen)")
 
+    # Beroepstaken (HBO-i), in canonieke volgorde
+    def _beroep_order(d: dict) -> list:
+        return [c for c in _BEROEPSTAAK_ORDER if c in d] + sorted(c for c in d if c not in _BEROEPSTAAK_ORDER)
+
+    print("\nBehaalde beroepstaken:")
+    if beroep_achieved:
+        for code in _beroep_order(beroep_achieved):
+            print(f"  {code} ({beroepstaak_name(code)}): {', '.join(beroep_achieved[code])}")
+    else:
+        print("  (geen)")
+
+    # Ingeleverde eindassessments (alle 10 vaardigheden in één verzoek)
+    for rid, detail in assessments.items():
+        print(f"\nAssessment ingeleverd: ({detail})" if detail else "\nAssessment ingeleverd")
+
     if ARGS.vraagtekens:
         if pending:
             print("\nIngediende evaluaties (nog niet beoordeeld):")
@@ -2714,6 +3029,11 @@ def print_student_evaluations(token, student_name, student_data, semester_scope=
                 print(f"  {goal}: {', '.join(parts)}")
         else:
             print("\nIngediende evaluaties (nog niet beoordeeld): (geen)")
+
+        if beroep_pending:
+            print("\nIngediende beroepstaken (nog niet beoordeeld):")
+            for code in _beroep_order(beroep_pending):
+                print(f"  {code} ({beroepstaak_name(code)}): {', '.join(beroep_pending[code])}")
 
     return "OK"
 
@@ -2742,6 +3062,7 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
     _BG_BLUE  = "\033[48;2;119;140;163m"   # blauw-grijs  (OC, KO, JKO, KPM)
     _BG_GREEN = "\033[48;2;141;164;122m"   # salie-groen  (PL, BD, SW)
     _BG_TERRA = "\033[48;2;190;145;110m"   # terra-cotta  (FO, PH, RE)
+    _BG_PURPLE = "\033[48;2;150;130;170m"  # paars        (beroepstaken)
     _RESET    = "\033[0m"
 
     _GOAL_BG = {
@@ -2757,10 +3078,22 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
         "Reflecteren":                 _BG_TERRA,
     }
 
-    # Build student -> goal -> list of short levels
+    # Eindsemester-assessments (één verzoek dat alle 10 vaardigheden afdekt) niet als
+    # losse '?' in de tabel tonen; hun openstaande items verbergen we volledig.
+    full_rids = _full_assessment_rids(results)
+    display_results = [
+        r for r in results
+        if not (r.get("evaluation") == "?" and r.get("review_request_id") in full_rids)
+    ]
+
+    # Build student -> goal -> list of short levels (beroepstaken apart verzameld)
     student_goals = {}
-    for r in results:
+    _beroep_rows = {}   # student -> lijst beroepstaak-resultaten
+    for r in display_results:
         s = r["student_name"]
+        if r.get("beroepstaak"):
+            _beroep_rows.setdefault(s, []).append(r)
+            continue
         g = r["goal_name"]
         level = extract_level_short(r["evaluation"])
         student_goals.setdefault(s, {}).setdefault(g, []).append(level)
@@ -2771,6 +3104,9 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
             if name != SEPARATOR_SENTINEL:
                 student_goals.setdefault(name, {})
 
+    # Beroepstakencel per student, bv. 'SW-AN(1), SW-RE(2)'
+    student_beroep = {s: _format_beroepstaken_cell(_beroep_rows.get(s, [])) for s in student_goals}
+
     # Determine column widths
     col_widths = []
     for full_name, abbrev in GOAL_COLUMNS:
@@ -2780,6 +3116,7 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
             width = max(width, len(cell))
         col_widths.append(width)
 
+    beroep_width       = max(len("Beroepstaken"), max((len(v) for v in student_beroep.values()), default=0))
     name_width         = max(len("Naam"), max(len(s) for s in student_goals))
     sem_width          = max(len("Semester"), max((len(f"Semester {_sem_map.get(s, '')}".strip() if _sem_map.get(s) else "") for s in student_goals), default=0))
     tribe_width        = max(len("Tribe"), max((len(_tribe_map.get(s, "")) for s in student_goals), default=0))
@@ -2796,6 +3133,7 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
     _plain_header = f"{'Naam':<{name_width}}"
     for (_, abbrev), w in zip(GOAL_COLUMNS, col_widths):
         _plain_header += f" | {abbrev:<{w}}"
+    _plain_header += f" | {'Beroepstaken':<{beroep_width}}"
     if _show_tribe:
         _plain_header += f" | {'Tribe':<{tribe_width}}"
     if _show_sem:
@@ -2813,6 +3151,7 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
     for (full_name, abbrev), w in zip(GOAL_COLUMNS, col_widths):
         bg = _GOAL_BG[full_name]
         header += f" | {bg}{abbrev:<{w}}{_RESET}"
+    header += f" | {_BG_PURPLE}{'Beroepstaken':<{beroep_width}}{_RESET}"
     if _show_tribe:
         header += f" | {'Tribe':<{tribe_width}}"
     if _show_sem:
@@ -2855,6 +3194,7 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
             for (full_name, _), w in zip(GOAL_COLUMNS, col_widths):
                 bg = _GOAL_BG[full_name]
                 row += f" | \033[2m{'n/b' if w >= 3 else '-':<{w}}\033[0m"
+            row += f" | \033[2m{'n/b' if beroep_width >= 3 else '-':<{beroep_width}}\033[0m"
             if _show_tribe:
                 row += f" | \033[2m{display_tribe:<{tribe_width}}\033[0m"
             if _show_sem:
@@ -2887,10 +3227,15 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
                 row += f" | \033[104m{cell:<{w}}\033[0m"
             else:
                 row += f" | {cell:<{w}}"
+        row += f" | {student_beroep.get(student_name, ''):<{beroep_width}}"
         if _show_tribe:
             row += f" | {display_tribe:<{tribe_width}}"
         if _show_sem:
-            row += f" | {display_sem:<{sem_width}}"
+            _sem_ok = (not ARGS.anoniem) and _meets_semester(sem_raw, goals, _beroep_rows.get(student_name, []))
+            if _sem_ok:
+                row += f" | \033[42m{display_sem:<{sem_width}}\033[0m"
+            else:
+                row += f" | {display_sem:<{sem_width}}"
         if _show_gilde:
             row += f" | {display_gilde:<{gilde_width}}"
         if _coach_map is not None:
@@ -2901,7 +3246,7 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
 
     if inaccessible_names and any(n in inaccessible_names for n in (all_names or []) if n != SEPARATOR_SENTINEL):
         print("  \033[2mn/b = portfolio niet zichtbaar (geen toegang)\033[0m")
-    print_week_barchart(results)
+    print_week_barchart(display_results)
     print()
 
 
