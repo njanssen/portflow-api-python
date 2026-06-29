@@ -71,7 +71,7 @@ def parse_coach_students(raw_json: str):
 
         # Separator entry: {"separator": true}
         if entry.get("separator") is True:
-            students.append((SEPARATOR_SENTINEL, None, "", "", "", "", ""))
+            students.append((SEPARATOR_SENTINEL, None, "", "", "", "", "", ""))
             continue
 
         name = str(entry.get("name") or "").strip()
@@ -98,8 +98,9 @@ def parse_coach_students(raw_json: str):
         gilde = str(entry.get("gilde") or "").strip()
         coach = str(entry.get("coach") or "").strip()
         gildemeester = str(entry.get("gildemeester") or "").strip()
+        resultaat = str(entry.get("resultaat") or "").strip().lower()
 
-        students.append((name, start_date, semester, tribe, gilde, coach, gildemeester))
+        students.append((name, start_date, semester, tribe, gilde, coach, gildemeester, resultaat))
 
     return students
 
@@ -319,22 +320,41 @@ def _best_beroepstaak_level(levels: "list[str]") -> str:
     return "?"
 
 
-def _format_beroepstaken_cell(results: "list[dict]") -> str:
-    """Bouw de tabelcel met het aantal beroepstaken per niveau (bv. '3x2, 1x1').
-    Per beroepstaak telt het hoogste behaalde niveau; daarna geteld per niveau,
-    aflopend (3, 2, 1, 0) en daarna '?'."""
-    by_code: "dict[str, list[str]]" = {}
+def _beroepstaak_demo_levels(results: "list[dict]") -> "list[str]":
+    """Geef per afzonderlijke beoordeling (review request) het te tellen niveau.
+
+    Elke afzonderlijke beoordeling telt mee: dezelfde beroepstaak die in twee
+    verschillende review requests is behaald, levert twee niveaus op. Alleen
+    echte duplicaten binnen één review request (dezelfde beroepstaak als
+    top-level doel én als subdoel, zelfde review_request_id) worden samengevoegd
+    tot het hoogste niveau. Rijen zonder review_request_id kunnen we niet als
+    duplicaat herkennen en tellen daarom los (elk een eigen sleutel), net als in
+    de enkele-studentweergave."""
+    by_demo: "dict[object, list[str]]" = {}
+    anon = 0
     for r in results:
         code = r.get("beroepstaak")
         if not code:
             continue
-        by_code.setdefault(code, []).append(extract_level_short(r["evaluation"]))
-    if not by_code:
-        return ""
+        rid = r.get("review_request_id")
+        if rid is None:
+            key: object = ("_anon", anon)
+            anon += 1
+        else:
+            key = (code, rid)
+        by_demo.setdefault(key, []).append(extract_level_short(r["evaluation"]))
+    return [_best_beroepstaak_level(levels) for levels in by_demo.values()]
+
+
+def _format_beroepstaken_cell(results: "list[dict]") -> str:
+    """Bouw de tabelcel met het aantal beroepstaken per niveau (bv. '3x2, 1x1').
+    Elke afzonderlijke beoordeling telt mee (zie _beroepstaak_demo_levels).
+    Geteld per niveau, aflopend (3, 2, 1, 0) en daarna '?'."""
     counts: "dict[str, int]" = {}
-    for levels in by_code.values():
-        lvl = _best_beroepstaak_level(levels)
+    for lvl in _beroepstaak_demo_levels(results):
         counts[lvl] = counts.get(lvl, 0) + 1
+    if not counts:
+        return ""
 
     def _order_key(level: str):
         # numerieke niveaus hoog -> laag eerst, dan '?', dan overige labels
@@ -394,16 +414,12 @@ def _meets_semester(sem_raw: str, goals: dict, beroep_rows: "list[dict]") -> boo
         return False
     n_lvl2 = sum(1 for fn, _ in GOAL_COLUMNS if max_lvl[fn] >= 2)
 
-    # Hoogste niveau per beroepstaak (code).
-    by_code: dict = {}
-    for r in beroep_rows:
-        code = r.get("beroepstaak")
-        if not code:
-            continue
-        by_code.setdefault(code, []).append(extract_level_short(r["evaluation"]))
+    # Niveau per afzonderlijke beoordeling (review request); dezelfde beroepstaak
+    # die in twee review requests is behaald, telt dus twee keer mee, gelijk aan
+    # de beroepstakencel in de tabel.
     beroep_best = [
         (int(b) if b.isdigit() else -1)
-        for b in (_best_beroepstaak_level(levels) for levels in by_code.values())
+        for b in _beroepstaak_demo_levels(beroep_rows)
     ]
 
     if sem_raw == "3":
@@ -430,6 +446,7 @@ COACH_STUDENT_TRIBE       = {name: tribe for name, _, _, tribe, *_ in CURRENT_CO
 COACH_STUDENT_GILDE        = {name: gilde for name, _, _, _, gilde, *_ in CURRENT_COACH_STUDENTS if gilde}
 COACH_STUDENT_COACH        = {name: coach for name, _, _, _, _, coach, *_ in CURRENT_COACH_STUDENTS if coach}
 COACH_STUDENT_GILDEMEESTER = {name: gm   for name, _, _, _, _, _, gm, *_ in CURRENT_COACH_STUDENTS if gm}
+COACH_STUDENT_RESULTAAT    = {name: res for name, _, _, _, _, _, _, res, *_ in CURRENT_COACH_STUDENTS if res}
 
 # Tribe-brede lijst (eigen studenten + collega's) uit .env
 CURRENT_TRIBE_STUDENTS = parse_coach_students(
@@ -442,6 +459,7 @@ TRIBE_STUDENT_TRIBE        = {name: tribe for name, _, _, tribe, *_ in CURRENT_T
 TRIBE_STUDENT_GILDE        = {name: gilde for name, _, _, _, gilde, *_ in CURRENT_TRIBE_STUDENTS if gilde}
 TRIBE_STUDENT_COACH        = {name: coach for name, _, _, _, _, coach, *_ in CURRENT_TRIBE_STUDENTS if coach}
 TRIBE_STUDENT_GILDEMEESTER = {name: gm   for name, _, _, _, _, _, gm, *_ in CURRENT_TRIBE_STUDENTS if gm}
+TRIBE_STUDENT_RESULTAAT    = {name: res for name, _, _, _, _, _, _, res, *_ in CURRENT_TRIBE_STUDENTS if res}
 
 # Gilde-brede lijst uit .env
 CURRENT_GILDE_STUDENTS = parse_coach_students(
@@ -454,6 +472,7 @@ GILDE_STUDENT_TRIBE        = {name: tribe for name, _, _, tribe, *_ in CURRENT_G
 GILDE_STUDENT_GILDE        = {name: gilde for name, _, _, _, gilde, *_ in CURRENT_GILDE_STUDENTS if gilde}
 GILDE_STUDENT_COACH        = {name: coach for name, _, _, _, _, coach, *_ in CURRENT_GILDE_STUDENTS if coach}
 GILDE_STUDENT_GILDEMEESTER = {name: gm   for name, _, _, _, _, _, gm, *_ in CURRENT_GILDE_STUDENTS if gm}
+GILDE_STUDENT_RESULTAAT    = {name: res for name, _, _, _, _, _, _, res, *_ in CURRENT_GILDE_STUDENTS if res}
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -917,7 +936,7 @@ def _write_env_key(key: str, value: str) -> None:
 def _reload_coach_students() -> None:
     """Herlaadt PORTFLOW_COACH_STUDENTS_JSON vanuit os.environ in de globale lookups."""
     global CURRENT_COACH_STUDENTS, COACH_STUDENT_NAMES, COACH_STUDENT_START_DATES
-    global COACH_STUDENT_SEMESTER, COACH_STUDENT_TRIBE, COACH_STUDENT_GILDE, COACH_STUDENT_COACH, COACH_STUDENT_GILDEMEESTER
+    global COACH_STUDENT_SEMESTER, COACH_STUDENT_TRIBE, COACH_STUDENT_GILDE, COACH_STUDENT_COACH, COACH_STUDENT_GILDEMEESTER, COACH_STUDENT_RESULTAAT
     CURRENT_COACH_STUDENTS = parse_coach_students(
         os.getenv("PORTFLOW_COACH_STUDENTS_JSON", "").strip()
     )
@@ -930,12 +949,13 @@ def _reload_coach_students() -> None:
     COACH_STUDENT_GILDE        = {name: gilde for name, _, _, _, gilde, *_ in CURRENT_COACH_STUDENTS if gilde}
     COACH_STUDENT_COACH        = {name: coach for name, _, _, _, _, coach, *_ in CURRENT_COACH_STUDENTS if coach}
     COACH_STUDENT_GILDEMEESTER = {name: gm   for name, _, _, _, _, _, gm, *_ in CURRENT_COACH_STUDENTS if gm}
+    COACH_STUDENT_RESULTAAT    = {name: res for name, _, _, _, _, _, _, res, *_ in CURRENT_COACH_STUDENTS if res}
 
 
 def _reload_tribe_students() -> None:
     """Herlaadt PORTFLOW_TRIBE_STUDENTS_JSON vanuit os.environ in de globale lookups."""
     global CURRENT_TRIBE_STUDENTS, TRIBE_STUDENT_NAMES, TRIBE_STUDENT_START_DATES
-    global TRIBE_STUDENT_SEMESTER, TRIBE_STUDENT_TRIBE, TRIBE_STUDENT_GILDE, TRIBE_STUDENT_COACH, TRIBE_STUDENT_GILDEMEESTER
+    global TRIBE_STUDENT_SEMESTER, TRIBE_STUDENT_TRIBE, TRIBE_STUDENT_GILDE, TRIBE_STUDENT_COACH, TRIBE_STUDENT_GILDEMEESTER, TRIBE_STUDENT_RESULTAAT
     CURRENT_TRIBE_STUDENTS = parse_coach_students(
         os.getenv("PORTFLOW_TRIBE_STUDENTS_JSON", "").strip()
     )
@@ -946,12 +966,13 @@ def _reload_tribe_students() -> None:
     TRIBE_STUDENT_GILDE        = {name: gilde for name, _, _, _, gilde, *_ in CURRENT_TRIBE_STUDENTS if gilde}
     TRIBE_STUDENT_COACH        = {name: coach for name, _, _, _, _, coach, *_ in CURRENT_TRIBE_STUDENTS if coach}
     TRIBE_STUDENT_GILDEMEESTER = {name: gm   for name, _, _, _, _, _, gm, *_ in CURRENT_TRIBE_STUDENTS if gm}
+    TRIBE_STUDENT_RESULTAAT    = {name: res for name, _, _, _, _, _, _, res, *_ in CURRENT_TRIBE_STUDENTS if res}
 
 
 def _reload_gilde_students() -> None:
     """Herlaadt PORTFLOW_GILDE_STUDENTS_JSON vanuit os.environ in de globale lookups."""
     global CURRENT_GILDE_STUDENTS, GILDE_STUDENT_NAMES, GILDE_STUDENT_START_DATES
-    global GILDE_STUDENT_SEMESTER, GILDE_STUDENT_TRIBE, GILDE_STUDENT_GILDE, GILDE_STUDENT_COACH, GILDE_STUDENT_GILDEMEESTER
+    global GILDE_STUDENT_SEMESTER, GILDE_STUDENT_TRIBE, GILDE_STUDENT_GILDE, GILDE_STUDENT_COACH, GILDE_STUDENT_GILDEMEESTER, GILDE_STUDENT_RESULTAAT
     CURRENT_GILDE_STUDENTS = parse_coach_students(
         os.getenv("PORTFLOW_GILDE_STUDENTS_JSON", "").strip()
     )
@@ -962,6 +983,7 @@ def _reload_gilde_students() -> None:
     GILDE_STUDENT_GILDE        = {name: gilde for name, _, _, _, gilde, *_ in CURRENT_GILDE_STUDENTS if gilde}
     GILDE_STUDENT_COACH        = {name: coach for name, _, _, _, _, coach, *_ in CURRENT_GILDE_STUDENTS if coach}
     GILDE_STUDENT_GILDEMEESTER = {name: gm   for name, _, _, _, _, _, gm, *_ in CURRENT_GILDE_STUDENTS if gm}
+    GILDE_STUDENT_RESULTAAT    = {name: res for name, _, _, _, _, _, _, res, *_ in CURRENT_GILDE_STUDENTS if res}
 
 
 def _migrate_env_add_coach_field() -> None:
@@ -2829,6 +2851,16 @@ def print_week_barchart(results, override_start=None, max_rows=10):
     sem_start = override_start if override_start is not None else CURRENT_SEMESTER_START
     sem_end   = CURRENT_SEMESTER_END
 
+    # Eindsemester-assessments (één verzoek dat alle 10 vaardigheden afdekt): hun
+    # openstaande '?' tellen niet mee in de grafiek, net zoals ze in de tabel
+    # verborgen worden. (Idempotent: print_coach_table geeft al gefilterde data door.)
+    full_rids = _full_assessment_rids(results)
+    if full_rids:
+        results = [
+            r for r in results
+            if not (r.get("evaluation") == "?" and r.get("review_request_id") in full_rids)
+        ]
+
     # Weeks needed to cover until semester end
     num_weeks = _math.ceil(((sem_end - sem_start).days + 1) / 7)
     if num_weeks <= 0:
@@ -3048,7 +3080,7 @@ def extract_level_short(evaluation_text: str) -> str:
     return evaluation_text
 
 
-def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=None, tribe_map=None, gilde_map=None, coach_map=None, gildemeester_map=None):
+def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=None, tribe_map=None, gilde_map=None, coach_map=None, gildemeester_map=None, resultaat_map=None):
     if not results and not all_names:
         print("No data to display.")
         return
@@ -3056,6 +3088,7 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
     _sem_map   = sem_map   if sem_map   is not None else COACH_STUDENT_SEMESTER
     _tribe_map = tribe_map if tribe_map is not None else COACH_STUDENT_TRIBE
     _gilde_map = gilde_map if gilde_map is not None else COACH_STUDENT_GILDE
+    _resultaat_map = resultaat_map if resultaat_map is not None else COACH_STUDENT_RESULTAAT
     _coach_map = coach_map  # None = geen Coach-kolom tonen
 
     # Achtergrondkleuren per groep (24-bit ANSI, passend bij de Open ICT kleurkaart)
@@ -3231,8 +3264,11 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
         if _show_tribe:
             row += f" | {display_tribe:<{tribe_width}}"
         if _show_sem:
+            _gezakt = (not ARGS.anoniem) and _resultaat_map.get(student_name, "") == "gezakt"
             _sem_ok = (not ARGS.anoniem) and _meets_semester(sem_raw, goals, _beroep_rows.get(student_name, []))
-            if _sem_ok:
+            if _gezakt:
+                row += f" | \033[41m{display_sem:<{sem_width}}\033[0m"
+            elif _sem_ok:
                 row += f" | \033[42m{display_sem:<{sem_width}}\033[0m"
             else:
                 row += f" | {display_sem:<{sem_width}}"
@@ -3631,7 +3667,8 @@ try:
             _sem_map_s = COACH_STUDENT_SEMESTER if source == "coach" else (TRIBE_STUDENT_SEMESTER if source == "tribe" else (GILDE_STUDENT_SEMESTER if source == "gilde" else {}))
             _tribe_map_s = COACH_STUDENT_TRIBE if source == "coach" else (TRIBE_STUDENT_TRIBE if source == "tribe" else (GILDE_STUDENT_TRIBE if source == "gilde" else {}))
             _gilde_map_s = COACH_STUDENT_GILDE if source == "coach" else (TRIBE_STUDENT_GILDE if source == "tribe" else (GILDE_STUDENT_GILDE if source == "gilde" else {}))
-            print_coach_table(_single_results, all_names=[name], sem_map=_sem_map_s, tribe_map=_tribe_map_s, gilde_map=_gilde_map_s)
+            _resultaat_map_s = COACH_STUDENT_RESULTAAT if source == "coach" else (TRIBE_STUDENT_RESULTAAT if source == "tribe" else (GILDE_STUDENT_RESULTAAT if source == "gilde" else {}))
+            print_coach_table(_single_results, all_names=[name], sem_map=_sem_map_s, tribe_map=_tribe_map_s, gilde_map=_gilde_map_s, resultaat_map=_resultaat_map_s)
 
             # Gedetailleerde tekstoutput onder de tabel
             status = print_student_evaluations(token, name, students[name], semester_scope, override_start=override)
@@ -3732,7 +3769,7 @@ try:
                     all_results.extend(res)
                 else:
                     print()
-                    print_coach_table(all_results, all_names=coach_names_list, sem_map=COACH_STUDENT_SEMESTER, tribe_map=COACH_STUDENT_TRIBE, gilde_map=COACH_STUDENT_GILDE)
+                    print_coach_table(all_results, all_names=coach_names_list, sem_map=COACH_STUDENT_SEMESTER, tribe_map=COACH_STUDENT_TRIBE, gilde_map=COACH_STUDENT_GILDE, resultaat_map=COACH_STUDENT_RESULTAAT)
                     maybe_write_schema_report()
                     maybe_write_pending_debug_report()
 
@@ -3755,7 +3792,7 @@ try:
                     all_results.extend(res)
                 else:
                     print()
-                    print_coach_table(all_results, all_names=tribe_names_list, inaccessible_names=inaccessible, sem_map=TRIBE_STUDENT_SEMESTER, tribe_map=TRIBE_STUDENT_TRIBE, gilde_map=TRIBE_STUDENT_GILDE, coach_map=TRIBE_STUDENT_COACH)
+                    print_coach_table(all_results, all_names=tribe_names_list, inaccessible_names=inaccessible, sem_map=TRIBE_STUDENT_SEMESTER, tribe_map=TRIBE_STUDENT_TRIBE, gilde_map=TRIBE_STUDENT_GILDE, coach_map=TRIBE_STUDENT_COACH, resultaat_map=TRIBE_STUDENT_RESULTAAT)
                     maybe_write_schema_report()
                     maybe_write_pending_debug_report()
 
@@ -3778,7 +3815,7 @@ try:
                     all_results.extend(res)
                 else:
                     print()
-                    print_coach_table(all_results, all_names=gilde_names_list, inaccessible_names=inaccessible, sem_map=GILDE_STUDENT_SEMESTER, tribe_map=GILDE_STUDENT_TRIBE, gilde_map=GILDE_STUDENT_GILDE, coach_map=GILDE_STUDENT_COACH, gildemeester_map=GILDE_STUDENT_GILDEMEESTER)
+                    print_coach_table(all_results, all_names=gilde_names_list, inaccessible_names=inaccessible, sem_map=GILDE_STUDENT_SEMESTER, tribe_map=GILDE_STUDENT_TRIBE, gilde_map=GILDE_STUDENT_GILDE, coach_map=GILDE_STUDENT_COACH, gildemeester_map=GILDE_STUDENT_GILDEMEESTER, resultaat_map=GILDE_STUDENT_RESULTAAT)
                     maybe_write_schema_report()
                     maybe_write_pending_debug_report()
 
