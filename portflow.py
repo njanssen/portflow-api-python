@@ -10,8 +10,31 @@ from datetime import datetime
 from pathlib import Path
 
 
+def _get_exe_dir() -> Path:
+    """Geef de map terug van het uitvoerbare bestand (PyInstaller-compatibel)."""
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def _pre_parse_config() -> Path:
+    """Lees --config uit sys.argv zonder argparse (zodat het .env-pad vroeg bekend is)."""
+    args = sys.argv[1:]
+    for i, arg in enumerate(args):
+        if arg == "--config" and i + 1 < len(args):
+            p = Path(args[i + 1])
+            if not p.is_absolute():
+                p = Path.cwd() / p
+            return p.resolve()
+    return _get_exe_dir() / ".env"
+
+
+# Pad naar het .env configuratiebestand; kan worden overschreven met --config
+ENV_FILE: Path = _pre_parse_config()
+
+
 def load_env_file(env_path: Path | None = None) -> None:
-    env_file = env_path or (Path(__file__).resolve().parent / ".env")
+    env_file = env_path or ENV_FILE
     if not env_file.exists():
         return
 
@@ -112,6 +135,7 @@ print(r" |  __/ (_) | |  | |_|  _| | (_) \ V  V /  ")
 print(r" |_|   \___/|_|   \__|_| |_|\___/ \_/\_/   ")
 print(r"      dashboard  —  peter.snoek@hu.nl      ")
 print()
+print(f"Config: {ENV_FILE}")
 
 # Controleer vereiste packages
 _REQUIRED_PACKAGES = [
@@ -136,7 +160,7 @@ if _missing:
         print("Tip: zonder 'openpyxl' is het inlezen van Excel-bestanden niet beschikbaar.")
         print()
 
-load_env_file()
+load_env_file(ENV_FILE)
 
 BASE_URL = "https://portfolio.drieam.app/api/v1"
 PER_PAGE = 200
@@ -147,7 +171,7 @@ SECTION_ID = "72086"
 
 def _load_semester_dates() -> tuple:
     """Lees semester datums uit .env; vraag interactief als ze ontbreken."""
-    env_file = Path(__file__).resolve().parent / ".env"
+    env_file = ENV_FILE
 
     def _read_date(key: str, prompt: str):
         val = os.getenv(key, "").strip()
@@ -531,6 +555,12 @@ def parse_args():
         metavar="KOLOMMEN",
         help="Verberg kolommen in de tabel (komma-gescheiden): Tribe, Semester, Gilde of 'alles'",
     )
+    parser.add_argument(
+        "--config",
+        default=None,
+        metavar="BESTAND",
+        help="Pad naar het .env configuratiebestand (standaard: map van het uitvoerbare bestand)",
+    )
     return parser.parse_args()
 
 
@@ -692,7 +722,7 @@ def maybe_write_schema_report():
 
 def _save_token_to_env(token: str) -> None:
     """Schrijft de bearer token naar .env (vervangt een eventuele bestaande waarde)."""
-    env_path = Path(__file__).resolve().parent / ".env"
+    env_path = ENV_FILE
     if env_path.exists():
         content = env_path.read_text(encoding="utf-8")
         if re.search(r"^PORTFLOW_BEARER_TOKEN=", content, flags=re.MULTILINE):
@@ -833,6 +863,34 @@ def name_to_initials(full_name: str) -> str:
     return "".join(letters)
 
 
+def _normalize_reviewer_name(name: "str | None") -> str:
+    """Normaliseer een beoordelaarsnaam voor vergelijking: kleine letters, punten
+    en koppeltekens weg, spaties samengevoegd. Zo matcht 'Niels Bontenbal'
+    ongeacht hoofdletters of dubbele spaties."""
+    if not isinstance(name, str):
+        return ""
+    return re.sub(r"\s+", " ", re.sub(r"[.\-]", " ", name).strip().lower())
+
+
+def _parse_excluded_reviewers(raw: str) -> set:
+    """Lees komma-gescheiden namen van beoordelaars die uitgesloten moeten worden."""
+    return {norm for part in (raw or "").split(",") if (norm := _normalize_reviewer_name(part))}
+
+
+# Beoordelaars van wie de beoordeelde evaluaties overal worden uitgefilterd —
+# bijvoorbeeld een ervaren student die als beoordelaar is opgetreden terwijl dat
+# niet mag. Komma-gescheiden in te stellen via .env; standaard 'Niels Bontenbal'.
+EXCLUDED_REVIEWERS = _parse_excluded_reviewers(
+    os.getenv("PORTFLOW_EXCLUDED_REVIEWERS", "Niels Bontenbal")
+)
+
+
+def is_excluded_reviewer(name: "str | None") -> bool:
+    """True als deze beoordelaar op de uitsluitingslijst staat (zie EXCLUDED_REVIEWERS)."""
+    norm = _normalize_reviewer_name(name)
+    return bool(norm) and norm in EXCLUDED_REVIEWERS
+
+
 def student_order_and_width(students: dict, preferred_order: list[str] | None = None) -> tuple[list[str], int]:
     if preferred_order:
         ordered_names = [n for n in preferred_order if n in students]
@@ -916,7 +974,7 @@ def _group_by_tribe(entries: list) -> list:
 
 def _write_env_key(key: str, value: str) -> None:
     """Vervangt of voegt een (mogelijk meerregelige) sleutel toe in .env."""
-    env_path = Path(__file__).resolve().parent / ".env"
+    env_path = ENV_FILE
     new_entry = f"{key}={value}\n"
     if not env_path.exists():
         env_path.write_text(new_entry, encoding="utf-8")
@@ -2330,6 +2388,24 @@ def resolve_reviewer_name(item, evaluation=None):
     return None
 
 
+def reliable_reviewer_name(item, evaluation=None):
+    """Beoordelaarsnaam uit alleen betrouwbare velden (geen recursieve `walk()`-gok).
+
+    Gebruikt voor de uitsluitingsbeslissing: we willen een beoordeling alleen
+    weghalen als we zéker weten wie de beoordelaar is. `resolve_reviewer_name`
+    valt als laatste redmiddel terug op een diepe zoektocht die een geneste,
+    niet-gerelateerde naam kan oppikken; dat is prima voor weergave, maar te
+    riskant om er iemands werk op te filteren."""
+    for source in ((evaluation.get("reviewer") if isinstance(evaluation, dict) else None),
+                   item.get("user"), item.get("author"), item.get("creator"),
+                   item.get("reviewer"), item.get("evaluator"), item.get("created_by")):
+        if isinstance(source, dict):
+            name = source.get("name") or source.get("full_name")
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+    return None
+
+
 def parse_datetime_value(raw_value):
     if raw_value in (None, ""):
         return None
@@ -2658,6 +2734,25 @@ def collect_results(
                     evaluation_text = str(level)
 
                 reviewer_name = resolve_reviewer_name(item, evaluation)
+                # Sla beoordeelde evaluaties van uitgesloten beoordelaars over
+                # (bv. een ervaren student die geen evaluaties hoort te geven).
+                # Pending (?) items blijven staan: die tonen dat er nog niet is
+                # beoordeeld, niet dat de uitgesloten persoon al heeft beoordeeld.
+                # De beslissing gaat op de betrouwbare beoordelaarsnaam, niet op de
+                # (soms gegokte) weergavenaam, zodat we nooit per ongeluk het werk
+                # van een geldige beoordelaar wegfilteren.
+                if (not is_pending) and is_excluded_reviewer(reliable_reviewer_name(item, evaluation)):
+                    log_pending_debug_event({
+                        "student_name": student_name,
+                        "portfolio_id": portfolio_id,
+                        "goal_id": goal_id,
+                        "goal_name": goal_name,
+                        "role": item.get("role"),
+                        "decision": "skip",
+                        "reason": "excluded_reviewer",
+                        "reviewer_name": reviewer_name,
+                    })
+                    continue
                 initials = name_to_initials(reviewer_name) if reviewer_name else ""
 
                 details = []
@@ -3032,6 +3127,11 @@ def print_student_evaluations(token, student_name, student_data, semester_scope=
         else:
             achieved.setdefault(goal, []).append(ev)
 
+    # Deduplicate: dezelfde evaluatie kan dubbel voorkomen als een student
+    # meerdere portfolios heeft met dezelfde doelen en beoordelingen.
+    achieved = {goal: list(dict.fromkeys(parts)) for goal, parts in achieved.items()}
+    beroep_achieved = {code: list(dict.fromkeys(parts)) for code, parts in beroep_achieved.items()}
+
     if achieved:
         print("Behaalde evaluaties:")
         for goal, parts in achieved.items():
@@ -3265,9 +3365,12 @@ def print_coach_table(results, all_names=None, inaccessible_names=None, sem_map=
             row += f" | {display_tribe:<{tribe_width}}"
         if _show_sem:
             _gezakt = (not ARGS.anoniem) and _resultaat_map.get(student_name, "") == "gezakt"
+            _geslaagd = (not ARGS.anoniem) and _resultaat_map.get(student_name, "") == "geslaagd"
             _sem_ok = (not ARGS.anoniem) and _meets_semester(sem_raw, goals, _beroep_rows.get(student_name, []))
             if _gezakt:
                 row += f" | \033[41m{display_sem:<{sem_width}}\033[0m"
+            elif _geslaagd:
+                row += f" | \033[48;2;0;100;0m{display_sem:<{sem_width}}\033[0m"
             elif _sem_ok:
                 row += f" | \033[42m{display_sem:<{sem_width}}\033[0m"
             else:
