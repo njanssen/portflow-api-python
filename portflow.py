@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -423,6 +424,15 @@ def _format_beroepstaken_cell(results: "list[dict]") -> str:
 
 # Namen van de 10 vaardigheden (zoals ze als doelnaam terugkomen in de API)
 _VAARDIGHEID_NAMES = {full for full, _ in GOAL_COLUMNS}
+_CANONICAL_GOAL_NAMES = {full.casefold(): full for full, _ in GOAL_COLUMNS}
+
+
+def canonical_goal_name(name: str) -> str:
+    """Zet een doelnaam uit Portflow om naar de canonieke vaardigheidsnaam.
+
+    Portflow-doelen verschillen per semester in hoofdletters (bv. 'Overzicht Creëren'
+    vs. 'Overzicht creëren'); zonder deze normalisatie vallen ze buiten de kolommen."""
+    return _CANONICAL_GOAL_NAMES.get(unicodedata.normalize("NFC", name or "").strip().casefold(), name)
 # Een review request die als één geheel alle 10 vaardigheden afdekt = een
 # eindsemester-assessment. De openstaande '?' daarvan worden in de tabel verborgen
 # en in de enkele-studentweergave samengevat als 'Assessment ingeleverd'.
@@ -3254,7 +3264,7 @@ def collect_results(
 
         for goal in goals:
             goal_id = goal["id"]
-            goal_name = goal["name"]
+            goal_name = canonical_goal_name(goal["name"])
 
             feedback_items = feedback_by_goal[goal_id]
             if feedback_items == "TOKEN_EXPIRED":
